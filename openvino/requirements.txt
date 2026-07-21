@@ -1,0 +1,6 @@
+openvino>=2024.0
+openvino-tokenizers>=2024.0
+torch>=2.4.0
+transformers>=4.45.0
+optimum[openvino]>=1.21.0
+numpy>=1.26.0

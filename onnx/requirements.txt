@@ -1,0 +1,7 @@
+onnx>=1.16.0
+onnxruntime>=1.18.0
+onnxruntime-gpu>=1.18.0
+torch>=2.4.0
+transformers>=4.45.0
+optimum>=1.21.0
+numpy>=1.26.0

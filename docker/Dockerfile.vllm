@@ -1,0 +1,22 @@
+# vLLM 推理服务 Docker 镜像
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 安装 vLLM
+RUN pip3 install --no-cache-dir vllm torch transformers
+
+COPY vllm/ /app/vllm/
+COPY common/ /app/common/
+
+EXPOSE 8000
+
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]

@@ -1,0 +1,70 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+.eggs/
+venv/
+.venv/
+*.whl
+
+# ── C++ / CMake ───────────────────────────────────────────────
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.obj
+*.exe
+*.out
+*.app
+Makefile
+
+# ── 模型文件 ──────────────────────────────────────────────────
+models/
+*.gguf
+*.bin
+*.safetensors
+*.pth
+*.onnx
+*.xml
+*.engine
+*.plan
+
+# ── 推理产物 ──────────────────────────────────────────────────
+trt_engines/
+onnx_models/
+openvino_models/
+checkpoint/
+
+# ── 结果/日志 ──────────────────────────────────────────────────
+results/*
+!results/.gitkeep
+*.log
+logs/
+
+# ── IDE ───────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Docker ────────────────────────────────────────────────────
+.docker/
+
+# ── 环境变量 ──────────────────────────────────────────────────
+.env
+.env.local
+
+# ── llama.cpp ─────────────────────────────────────────────────
+llamacpp/llama.cpp/
+llamacpp/build/

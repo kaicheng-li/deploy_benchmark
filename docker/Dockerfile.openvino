@@ -1,0 +1,12 @@
+# OpenVINO 推理 Docker 镜像
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    openvino openvino-tokenizers transformers optimum[openvino] torch numpy
+
+COPY openvino/ /app/openvino/
+COPY common/ /app/common/
+
+ENTRYPOINT ["python3", "openvino/inference.py"]

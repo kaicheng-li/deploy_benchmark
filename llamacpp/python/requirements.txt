@@ -1,0 +1,3 @@
+llama-cpp-python>=0.2.90
+torch>=2.4.0
+numpy>=1.26.0

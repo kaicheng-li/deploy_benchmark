@@ -1,0 +1,25 @@
+# llama.cpp 推理 Docker 镜像
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 编译 llama.cpp
+RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git && \
+    cd llama.cpp && mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build . -j$(nproc) && \
+    cp bin/* /usr/local/bin/
+
+# Python 封装
+RUN pip3 install --no-cache-dir llama-cpp-python
+
+COPY llamacpp/ /app/llamacpp/
+COPY common/ /app/common/
+
+ENTRYPOINT ["python3", "llamacpp/python/inference.py"]
