@@ -1,15 +1,15 @@
-"""OpenVINO 推理脚本 — 支持 LLM 和 CV。
+"""Run this project's OpenVINO model.
 
-使用方式:
-    # LLM
-    python inference.py --config config.yaml --prompt "Hello world"
-    # CV
-    python inference.py --config config.yaml --task image-classification --image cat.jpg
+Only two modes: vision (RF-DETR Seg) or qwen (Qwen).
 """
 
-import argparse
+from __future__ import annotations
+
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import yaml
@@ -21,97 +21,107 @@ from common.logger import setup_logger
 logger = setup_logger("openvino_inference")
 
 
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
+def force_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def load_config() -> dict[str, Any]:
+    with open("config.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def load_ov_model(config: dict):
-    """加载 OpenVINO 编译模型和 tokenizer。"""
+def load_labels(model_path: str | Path) -> dict[int, str]:
+    with open(Path(model_path) / "config.json", "r", encoding="utf-8") as f:
+        raw = json.load(f).get("id2label", {})
+    return {int(key): str(value) for key, value in raw.items()}
+
+
+# ── vision ────────────────────────────────────────────────────────
+
+def run_vision(cfg: dict[str, Any]) -> None:
+    import openvino as ov
+    import torch
+    from PIL import Image
+    from transformers import AutoImageProcessor
+
+    core = ov.Core()
+    compiled = core.compile_model(cfg["ir_file"], cfg.get("device", "CPU"))
+
+    image = Image.open(cfg["image"]).convert("RGB")
+    processor = AutoImageProcessor.from_pretrained(cfg["model_path"])
+    encoded = dict(processor(images=image, return_tensors="np"))
+
+    feed = {}
+    for key, value in encoded.items():
+        if key in {"pixel_values"}:
+            feed[key] = value.astype(np.float32)
+        else:
+            feed[key] = value.astype(np.int64)
+
+    result = compiled(feed)
+    outputs = SimpleNamespace(
+        logits=torch.from_numpy(result["logits"]),
+        pred_boxes=torch.from_numpy(result["pred_boxes"]),
+        pred_masks=torch.from_numpy(result["pred_masks"]),
+    )
+    out = processor.post_process_instance_segmentation(
+        outputs,
+        target_sizes=[image.size[::-1]],
+        threshold=float(cfg.get("threshold", 0.5)),
+        mask_threshold=0.0,
+    )[0]
+
+    labels = load_labels(cfg["model_path"])
+    segments = out["segments_info"]
+    print(f"Image: {cfg['image']}")
+    print(f"Segments: {len(segments)}")
+    for item in segments[:20]:
+        label_id = int(item["label_id"])
+        label = labels.get(label_id, f"class_{label_id}")
+        print(f"  id={item['id']} label={label} score={float(item['score']):.4f}")
+
+
+# ── qwen ──────────────────────────────────────────────────────────
+
+def run_qwen(cfg: dict[str, Any]) -> None:
     import openvino as ov
     from transformers import AutoTokenizer
 
-    runtime_cfg = config["runtime"]
-    model_dir = Path(runtime_cfg["model_dir"])
-
-    tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
     core = ov.Core()
-    compiled = core.compile_model(
-        str(model_dir / "openvino_model.xml"),
-        runtime_cfg.get("device", "CPU"),
-    )
-    logger.info(f"设备: {runtime_cfg.get('device', 'CPU')}")
-    return compiled, tokenizer
+    compiled = core.compile_model(cfg["ir_file"], cfg.get("device", "CPU"))
 
+    tokenizer = AutoTokenizer.from_pretrained(cfg["model_path"], trust_remote_code=True)
+    encoded = tokenizer(cfg["prompt"], return_tensors="np")
+    input_ids = encoded["input_ids"].astype(np.int64)
+    attention_mask = encoded["attention_mask"].astype(np.int64)
 
-# ── LLM ───────────────────────────────────────────────────────
-
-def generate_text(compiled, tokenizer, prompt: str, max_new_tokens: int = 512) -> str:
-    input_ids = tokenizer(prompt, return_tensors="np")["input_ids"]
-    generated = list(input_ids[0])
-
-    for _ in range(max_new_tokens):
-        model_input = np.array([generated[-1024:]], dtype=np.int64)
-        outputs = compiled(model_input)
-        logits = list(outputs.values())[0] if isinstance(outputs, dict) else outputs[0]
-        next_token = int(np.argmax(logits[0, -1, :]))
-        generated.append(next_token)
-        if next_token == tokenizer.eos_token_id:
+    for _ in range(int(cfg.get("max_new_tokens", 32))):
+        logits = compiled({"input_ids": input_ids, "attention_mask": attention_mask})["logits"]
+        next_id = int(np.argmax(logits[0, -1]))
+        input_ids = np.concatenate([input_ids, np.array([[next_id]], dtype=np.int64)], axis=1)
+        attention_mask = np.concatenate([attention_mask, np.ones((1, 1), dtype=np.int64)], axis=1)
+        if tokenizer.eos_token_id is not None and next_id == tokenizer.eos_token_id:
             break
 
-    return tokenizer.decode(generated, skip_special_tokens=True)
+    print(tokenizer.decode(input_ids[0], skip_special_tokens=True))
 
 
-# ── CV ────────────────────────────────────────────────────────
+# ── entry ─────────────────────────────────────────────────────────
 
-def preprocess_image(image_path: str, size: tuple = (224, 224)) -> np.ndarray:
-    from PIL import Image
-    img = Image.open(image_path).convert("RGB").resize(size, Image.BILINEAR)
-    arr = np.array(img, dtype=np.float32) / 255.0
-    arr = (arr - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
-    arr = np.transpose(arr, (2, 0, 1))
-    return np.expand_dims(arr, axis=0)
+def main() -> None:
+    force_utf8_stdio()
+    config = load_config()
+    mode = config["mode"]
+    cfg = config[mode]
 
-
-def classify_image(compiled, image_path: str) -> list[tuple[str, float]]:
-    tensor = preprocess_image(image_path)
-    outputs = compiled(tensor)
-    logits = list(outputs.values())[0] if isinstance(outputs, dict) else outputs[0]
-    top5_idx = np.argsort(logits[0])[-5:][::-1]
-
-    from onnx.inference import load_imagenet_labels
-    labels = load_imagenet_labels()
-    return [(labels.get(int(i), f"class_{i}"), float(logits[0][i])) for i in top5_idx]
-
-
-# ── 入口 ──────────────────────────────────────────────────────
-
-def main():
-    parser = argparse.ArgumentParser(description="OpenVINO 推理")
-    parser.add_argument("--config", type=str, default="config.yaml")
-    parser.add_argument("--task", type=str, default=None, choices=["text-generation", "image-classification"])
-    parser.add_argument("--prompt", type=str, default="Hello world")
-    parser.add_argument("--image", type=str, default=None)
-    parser.add_argument("--max_tokens", type=int, default=512)
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    task = args.task or config.get("task", "text-generation")
-
-    compiled, tokenizer = load_ov_model(config)
-
-    if task == "text-generation":
-        output = generate_text(compiled, tokenizer, args.prompt, args.max_tokens)
-        print(f"\n[输入] {args.prompt}")
-        print(f"[输出] {output}")
+    if mode == "vision":
+        run_vision(cfg)
+    elif mode == "qwen":
+        run_qwen(cfg)
     else:
-        if not args.image:
-            logger.error("CV 任务需要 --image 参数")
-            sys.exit(1)
-        results = classify_image(compiled, args.image)
-        print(f"\n[图像] {args.image}")
-        for label, score in results:
-            print(f"  {label}: {score:.4f}")
+        raise ValueError("config.yaml mode must be 'vision' or 'qwen'")
 
 
 if __name__ == "__main__":

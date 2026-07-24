@@ -1,157 +1,140 @@
-"""ONNX Runtime 推理脚本 — 支持 LLM 和 CV。
+"""Run this project's ONNX model.
 
-使用方式:
-    # LLM
-    python inference.py --config config.yaml --prompt "Hello world"
-    # CV
-    python inference.py --config config.yaml --task image-classification --image cat.jpg
+This script intentionally only knows about the two models in config.yaml:
+RF-DETR Seg and Qwen.
 """
 
-import argparse
+from __future__ import annotations
+
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
+import onnxruntime as ort
 import yaml
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.logger import setup_logger
 
+
 logger = setup_logger("onnx_inference")
 
 
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
+def force_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def load_config() -> dict[str, Any]:
+    with open("config.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def create_session(config: dict) -> "ort.InferenceSession":
-    import onnxruntime as ort
+def selected_config(config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    mode = config["mode"]
+    if mode not in {"vision", "qwen"}:
+        raise ValueError("config.yaml mode must be 'vision' or 'qwen'")
+    return mode, config[mode]
 
-    runtime_cfg = config["runtime"]
-    onnx_dir = Path(runtime_cfg["onnx_dir"])
-    model_path = str(onnx_dir / "model.onnx")
 
-    sess_opt = ort.SessionOptions()
-    opt_cfg = runtime_cfg.get("session_options", {})
-    sess_opt.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess_opt.intra_op_num_threads = opt_cfg.get("intra_op_num_threads", 4)
+def create_session(cfg: dict[str, Any]) -> ort.InferenceSession:
+    options = ort.SessionOptions()
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    options.intra_op_num_threads = int(cfg.get("threads", 4))
 
-    provider = runtime_cfg.get("provider", "CPUExecutionProvider")
+    provider = cfg.get("provider", "CPUExecutionProvider")
     providers = [provider]
     if provider == "CUDAExecutionProvider":
         providers.append("CPUExecutionProvider")
 
-    session = ort.InferenceSession(model_path, sess_opt, providers=providers)
-    logger.info(f"Provider: {session.get_providers()}")
-    return session
+    logger.info(f"Load ONNX model: {cfg['onnx_file']}")
+    return ort.InferenceSession(cfg["onnx_file"], options, providers=providers)
 
 
-# ── LLM ───────────────────────────────────────────────────────
+def load_labels(model_path: str | Path) -> dict[int, str]:
+    with open(Path(model_path) / "config.json", "r", encoding="utf-8") as f:
+        raw = json.load(f).get("id2label", {})
+    return {int(key): str(value) for key, value in raw.items()}
 
-def run_text(session, config: dict, prompt: str) -> dict:
+
+def run_vision(cfg: dict[str, Any]) -> None:
+    import torch
+    from transformers import AutoImageProcessor
+
+    session = create_session(cfg)
+    image = Image.open(cfg["image"]).convert("RGB")
+    processor = AutoImageProcessor.from_pretrained(cfg["model_path"])
+    encoded = dict(processor(images=image, return_tensors="np"))
+
+    feed = {}
+    for item in session.get_inputs():
+        value = encoded[item.name]
+        if item.type == "tensor(float)":
+            value = value.astype(np.float32)
+        elif item.type == "tensor(int64)":
+            value = value.astype(np.int64)
+        feed[item.name] = value
+
+    output_names = [item.name for item in session.get_outputs()]
+    output_map = dict(zip(output_names, session.run(output_names, feed)))
+    outputs = SimpleNamespace(
+        logits=torch.from_numpy(output_map["logits"]),
+        pred_boxes=torch.from_numpy(output_map["pred_boxes"]),
+        pred_masks=torch.from_numpy(output_map["pred_masks"]),
+    )
+    result = processor.post_process_instance_segmentation(
+        outputs,
+        target_sizes=[image.size[::-1]],
+        threshold=float(cfg.get("threshold", 0.5)),
+        mask_threshold=0.0,
+    )[0]
+
+    labels = load_labels(cfg["model_path"])
+    segments = result["segments_info"]
+    print(f"Image: {cfg['image']}")
+    print(f"Segments: {len(segments)}")
+    for item in segments[:20]:
+        label_id = int(item["label_id"])
+        label = labels.get(label_id, f"class_{label_id}")
+        print(f"  id={item['id']} label={label} score={float(item['score']):.4f}")
+
+
+def run_qwen(cfg: dict[str, Any]) -> None:
     from transformers import AutoTokenizer
-    model_name = config["export"]["model_path"]
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
-    inputs = tokenizer(prompt, return_tensors="np")
-    input_names = [inp.name for inp in session.get_inputs()]
-    output_names = [out.name for out in session.get_outputs()]
-    feed_dict = {n: inputs[n] for n in input_names if n in inputs}
+    session = create_session(cfg)
+    tokenizer = AutoTokenizer.from_pretrained(cfg["model_path"], trust_remote_code=True)
+    encoded = tokenizer(cfg["prompt"], return_tensors="np")
+    input_ids = encoded["input_ids"].astype(np.int64)
+    attention_mask = encoded["attention_mask"].astype(np.int64)
 
-    outputs = session.run(output_names, feed_dict)
-    result = dict(zip(output_names, outputs))
-    return result
+    for _ in range(int(cfg.get("max_new_tokens", 32))):
+        feed = {"input_ids": input_ids, "attention_mask": attention_mask}
+        logits = session.run(["logits"], feed)[0]
+        next_id = int(np.argmax(logits[0, -1]))
+        input_ids = np.concatenate([input_ids, np.array([[next_id]], dtype=np.int64)], axis=1)
+        attention_mask = np.concatenate([attention_mask, np.ones((1, 1), dtype=np.int64)], axis=1)
+        if tokenizer.eos_token_id is not None and next_id == tokenizer.eos_token_id:
+            break
 
-
-# ── CV ────────────────────────────────────────────────────────
-
-def preprocess_image(image_path: str, input_shape: tuple = (3, 224, 224)) -> np.ndarray:
-    """基本图像预处理：resize → normalize → (1, C, H, W)。"""
-    try:
-        from PIL import Image
-    except ImportError:
-        logger.error("需要 Pillow: pip install Pillow")
-        raise
-
-    img = Image.open(image_path).convert("RGB")
-    img = img.resize(input_shape[1:], Image.BILINEAR)
-
-    arr = np.array(img, dtype=np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-    arr = (arr - mean) / std
-    arr = np.transpose(arr, (2, 0, 1))       # HWC → CHW
-    arr = np.expand_dims(arr, axis=0)         # → (1, C, H, W)
-    return arr
+    print(tokenizer.decode(input_ids[0], skip_special_tokens=True))
 
 
-IMAGENET_LABELS_CACHE = None
-
-
-def load_imagenet_labels() -> dict[int, str]:
-    global IMAGENET_LABELS_CACHE
-    if IMAGENET_LABELS_CACHE is not None:
-        return IMAGENET_LABELS_CACHE
-    try:
-        import requests, json
-        url = "https://raw.githubusercontent.com/anishathalye/imagenet-simple-labels/master/imagenet-simple-labels.json"
-        resp = requests.get(url, timeout=10)
-        IMAGENET_LABELS_CACHE = {i: name for i, name in enumerate(resp.json())}
-    except Exception:
-        IMAGENET_LABELS_CACHE = {}
-    return IMAGENET_LABELS_CACHE
-
-
-def run_image(session, config: dict, image_path: str) -> dict:
-    """CV 单张图推理，返回 top-5 分类结果。"""
-    export_cfg = config["export"]
-    input_shape = tuple(export_cfg.get("input_shape", [1, 3, 224, 224]))
-
-    tensor = preprocess_image(image_path, input_shape)
-    input_name = session.get_inputs()[0].name
-    output_name = session.get_outputs()[0].name
-
-    outputs = session.run([output_name], {input_name: tensor.astype(np.float32)})
-    logits = outputs[0][0]
-
-    top5_idx = np.argsort(logits)[-5:][::-1]
-    labels = load_imagenet_labels()
-    top5 = [(labels.get(int(i), f"class_{i}"), float(logits[i])) for i in top5_idx]
-
-    return {"image": image_path, "top5": top5}
-
-
-# ── 入口 ──────────────────────────────────────────────────────
-
-def main():
-    parser = argparse.ArgumentParser(description="ONNX Runtime 推理")
-    parser.add_argument("--config", type=str, default="config.yaml")
-    parser.add_argument("--task", type=str, default=None, choices=["text-generation", "image-classification"])
-    parser.add_argument("--prompt", type=str, default="Hello, how are you?")
-    parser.add_argument("--image", type=str, default=None, help="图像路径")
-    parser.add_argument("--max_tokens", type=int, default=512)
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    task = args.task or config.get("task", "text-generation")
-
-    session = create_session(config)
-
-    if task == "text-generation":
-        result = run_text(session, config, args.prompt)
-        print(f"\n[输入] {args.prompt}")
-        print(f"[输出 Shape] {[v.shape for v in result.values()]}")
+def main() -> None:
+    force_utf8_stdio()
+    mode, cfg = selected_config(load_config())
+    if mode == "vision":
+        run_vision(cfg)
+    elif mode == "qwen":
+        run_qwen(cfg)
     else:
-        image_path = args.image
-        if not image_path:
-            logger.error("CV 任务需要 --image 参数")
-            sys.exit(1)
-        result = run_image(session, config, image_path)
-        print(f"\n[图像] {result['image']}")
-        for label, score in result["top5"]:
-            print(f"  {label}: {score:.4f}")
+        raise ValueError("config.yaml mode must be 'vision' or 'qwen'")
 
 
 if __name__ == "__main__":

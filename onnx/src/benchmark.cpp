@@ -1,24 +1,21 @@
 /**
- * OpenVINO C++ benchmark — vision (RF-DETR) or qwen.
+ * ONNX Runtime C++ benchmark — vision (RF-DETR) or qwen.
  *
  * Usage:
- *   ./ov_benchmark --model ./vision.xml --mode vision --image test.jpg
- *   ./ov_benchmark --model ./qwen.xml --mode qwen
+ *   ./onnx_benchmark --model ./vision.onnx --mode vision --image test.jpg
+ *   ./onnx_benchmark --model ./qwen.onnx --mode qwen --prompt "Hello"
  */
 
 #include <iostream>
 #include <string>
 
-#include <openvino/openvino.hpp>
-
 #include "benchmark_utils.h"
 
-namespace ov_bench {
-deploy_bench::BenchResult run_vision(const std::string& model_path,
-    const std::string& device, const std::string& image_path,
-    int target_size, int num_iterations);
-deploy_bench::BenchResult run_qwen(const std::string& model_path,
-    const std::string& device, int seq_len, int num_iterations);
+namespace onnx_bench {
+deploy_bench::BenchResult run_vision(struct OrtSession& ctx,
+    const std::string& image_path, int target_size, int num_iterations);
+deploy_bench::BenchResult run_qwen(struct OrtSession& ctx,
+    int seq_len, int num_iterations);
 }
 
 #include "inference.cpp"
@@ -26,8 +23,9 @@ deploy_bench::BenchResult run_qwen(const std::string& model_path,
 struct Config {
     std::string model_path;
     std::string mode = "vision";
-    std::string device = "CPU";
     std::string image_path = "test.jpg";
+    std::string provider = "CPUExecutionProvider";
+    int threads = 4;
     int seq_len = 128;
     int target_size = 640;
     int iterations = 100;
@@ -35,13 +33,14 @@ struct Config {
 
 void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " [OPTIONS]\n"
-              << "  --model <path>    OpenVINO .xml model (required)\n"
-              << "  --mode <name>     vision | qwen\n"
-              << "  --device <name>   CPU | GPU | AUTO\n"
+              << "  --model <path>    ONNX model path (required)\n"
+              << "  --mode <name>     vision | qwen (default: vision)\n"
               << "  --image <path>    Image for vision mode\n"
-              << "  --seq-len <n>     Qwen input seq length\n"
-              << "  --target-size <n> Vision input size\n"
-              << "  --iterations <n>  Benchmark iterations\n"
+              << "  --provider <name> CPUExecutionProvider | CUDAExecutionProvider\n"
+              << "  --threads <n>     Intra-op threads (default: 4)\n"
+              << "  --seq-len <n>     Qwen input seq length (default: 128)\n"
+              << "  --target-size <n> Vision input size (default: 640)\n"
+              << "  --iterations <n>  Benchmark iterations (default: 100)\n"
               << std::endl;
 }
 
@@ -52,8 +51,9 @@ int main(int argc, char* argv[]) {
         std::string arg = argv[i];
         if (arg == "--model" && i + 1 < argc)      cfg.model_path = argv[++i];
         else if (arg == "--mode" && i + 1 < argc)  cfg.mode = argv[++i];
-        else if (arg == "--device" && i + 1 < argc) cfg.device = argv[++i];
         else if (arg == "--image" && i + 1 < argc) cfg.image_path = argv[++i];
+        else if (arg == "--provider" && i + 1 < argc) cfg.provider = argv[++i];
+        else if (arg == "--threads" && i + 1 < argc) cfg.threads = std::stoi(argv[++i]);
         else if (arg == "--seq-len" && i + 1 < argc) cfg.seq_len = std::stoi(argv[++i]);
         else if (arg == "--target-size" && i + 1 < argc) cfg.target_size = std::stoi(argv[++i]);
         else if (arg == "--iterations" && i + 1 < argc) cfg.iterations = std::stoi(argv[++i]);
@@ -65,19 +65,18 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "=== OpenVINO C++ Benchmark ===\n";
+    std::cout << "=== ONNX Runtime C++ Benchmark ===\n";
     std::cout << "Model : " << cfg.model_path << "\n";
-    std::cout << "Mode  : " << cfg.mode << "\n";
-    std::cout << "Device: " << cfg.device << "\n\n";
+    std::cout << "Mode  : " << cfg.mode << "\n\n";
+
+    onnx_bench::OrtSession ctx(cfg.model_path, cfg.threads, cfg.provider);
 
     deploy_bench::BenchResult result;
 
     if (cfg.mode == "vision") {
-        result = ov_bench::run_vision(cfg.model_path, cfg.device,
-                                       cfg.image_path, cfg.target_size, cfg.iterations);
+        result = onnx_bench::run_vision(ctx, cfg.image_path, cfg.target_size, cfg.iterations);
     } else if (cfg.mode == "qwen") {
-        result = ov_bench::run_qwen(cfg.model_path, cfg.device,
-                                     cfg.seq_len, cfg.iterations);
+        result = onnx_bench::run_qwen(ctx, cfg.seq_len, cfg.iterations);
     } else {
         std::cerr << "Error: unknown mode '" << cfg.mode << "'\n";
         return 1;
