@@ -1,25 +1,33 @@
-# Only two ONNX modes are supported in this project:
-#   vision - RF-DETR segmentation
-#   qwen   - Qwen text generation
-
+# ONNX Runtime configuration. All relative paths are resolved from this file.
 mode: "vision"
 
-vision:
-  model_path: "../models/rf-detr-seg-medium"
-  onnx_file: "./onnx_models/vision.onnx"
-  image: "./0000000109.png"
-  threshold: 0.5
-  opset_version: 18
-  provider: "CPUExecutionProvider"
-  threads: 4
+models:
+  rf_detr_seg_medium:
+    id: "rf-detr-seg-medium"
+    source: "local"
+    path: "../models/rf-detr-seg-medium"
+    format: "transformers"
+  qwen2_1_5b:
+    id: "Qwen2-1.5B-Instruct"
+    source: "huggingface"
+    path: "Qwen/Qwen2-1.5B-Instruct"
+    format: "transformers"
 
-qwen:
-  # Change this to your local Qwen directory when available.
-  model_path: "Qwen/Qwen2-1.5B-Instruct"
-  onnx_file: "./onnx_models/qwen.onnx"
-  prompt: "Hello, introduce yourself briefly."
-  max_new_tokens: 64
-  seq_len: 32
-  opset_version: 18
-  provider: "CPUExecutionProvider"
-  threads: 4
+tasks:
+  vision:
+    model: "rf_detr_seg_medium"
+    onnx_file: "./onnx_models/vision.onnx"
+    image: "./0000000109.png"
+    threshold: 0.5
+    opset_version: 18
+    provider: "CPUExecutionProvider"
+    threads: 4
+  qwen:
+    model: "qwen2_1_5b"
+    onnx_file: "./onnx_models/qwen.onnx"
+    prompt: "Hello, introduce yourself briefly."
+    max_new_tokens: 64
+    seq_len: 32
+    opset_version: 18
+    provider: "CPUExecutionProvider"
+    threads: 4

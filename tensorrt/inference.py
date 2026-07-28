@@ -8,18 +8,14 @@ import argparse
 import sys
 from pathlib import Path
 
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common.config import default_config_path, load_config, resolve_model_path, resolve_path
 from common.logger import setup_logger
 
 logger = setup_logger("tensorrt_inference")
 
-
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def run_inference(config: dict, prompt: str, max_new_tokens: int = 512) -> str:
@@ -33,7 +29,7 @@ def run_inference(config: dict, prompt: str, max_new_tokens: int = 512) -> str:
         raise
 
     runner_kwargs = dict(
-        engine_dir=runtime_cfg["engine_dir"],
+        engine_dir=str(resolve_path(config["_config_path"], runtime_cfg["engine_dir"])),
         rank=0,
     )
 
@@ -57,12 +53,13 @@ def run_inference(config: dict, prompt: str, max_new_tokens: int = 512) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="TensorRT-LLM 推理")
-    parser.add_argument("--config", type=str, default="config.yaml", help="配置文件")
+    parser.add_argument("--config", type=str, default=str(default_config_path(__file__)), help="配置文件")
     parser.add_argument("--prompt", type=str, required=True, help="输入提示")
     parser.add_argument("--max_tokens", type=int, default=512, help="最大生成长度")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config, config_path = load_config(args.config)
+    config["_config_path"] = config_path
     output = run_inference(config, args.prompt, args.max_tokens)
     print(f"\n[输入] {args.prompt}")
     print(f"[输出] {output}")

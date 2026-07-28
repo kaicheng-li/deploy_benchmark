@@ -14,27 +14,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
 
 # 添加公共模块路径
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common.config import default_config_path, load_config, resolve_model_path, resolve_path
 from common.logger import setup_logger
 
 logger = setup_logger("tensorrt_builder")
 
-
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def step1_convert_checkpoint(config: dict) -> None:
     """Step 1: 将 HF 模型转成 TensorRT-LLM checkpoint。"""
     build_cfg = config["build"]
 
-    model_path = build_cfg["model_path"]
-    engine_dir = Path(build_cfg["engine_dir"])
+    model_path = resolve_model_path(config["model"], config["_config_path"])
+    engine_dir = resolve_path(config["_config_path"], build_cfg["engine_dir"])
     checkpoint_dir = engine_dir / "checkpoint"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -60,7 +56,7 @@ def step1_convert_checkpoint(config: dict) -> None:
 def step2_build_engine(config: dict) -> None:
     """Step 2: 从 checkpoint 构建 TensorRT engine。"""
     build_cfg = config["build"]
-    engine_dir = Path(build_cfg["engine_dir"])
+    engine_dir = resolve_path(config["_config_path"], build_cfg["engine_dir"])
 
     logger.info(f"Step 2: 构建 TensorRT engine -> {engine_dir}")
 
@@ -83,10 +79,11 @@ def step2_build_engine(config: dict) -> None:
 
 def build_all(config_path: str) -> None:
     """完整构建流程。"""
-    config = load_config(config_path)
+    config, path = load_config(config_path)
+    config["_config_path"] = path
     logger.info("=" * 60)
     logger.info("  TensorRT-LLM Engine 构建")
-    logger.info(f"  模型: {config['build']['model_path']}")
+    logger.info(f"  模型: {config["model"]["id"]}")
     logger.info(f"  精度: {config['build']['dtype']}")
     logger.info("=" * 60)
 
@@ -101,7 +98,7 @@ def build_all(config_path: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TensorRT-LLM Engine 构建")
-    parser.add_argument("--config", type=str, default="config.yaml", help="配置文件路径")
+    parser.add_argument("--config", type=str, default=str(default_config_path(__file__)), help="配置文件路径")
     args = parser.parse_args()
 
     build_all(args.config)

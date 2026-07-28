@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-import yaml
 
 # 添加项目根路径以导入 common 模块
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common.config import default_config_path, load_config, resolve_path
 from common.metrics import BenchmarkMetrics, TimingResult
 from common.reporter import BenchmarkReporter
 from common.logger import setup_logger
@@ -28,10 +28,6 @@ from common.data_loader import DataLoader
 
 logger = setup_logger("vllm_benchmark")
 
-
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def send_request(
@@ -118,7 +114,7 @@ def main():
     parser = argparse.ArgumentParser(description="vLLM 基准测试")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="服务地址")
     parser.add_argument("--port", type=int, default=8000, help="服务端口")
-    parser.add_argument("--config", type=str, default="config.yaml", help="配置文件")
+    parser.add_argument("--config", type=str, default=str(default_config_path(__file__)), help="配置文件")
     parser.add_argument("--data", type=str, default="../data/prompts.txt", help="测试数据文件")
     parser.add_argument("--concurrency", type=int, default=8, help="并发数")
     parser.add_argument("--output", type=str, default="../results", help="结果输出目录")
@@ -140,7 +136,8 @@ def main():
         prompts = DataLoader(data_path).load_prompts()
 
     # 加载配置
-    config = load_config(args.config)
+    config, config_path = load_config(args.config)
+    config["_config_path"] = config_path
     bench_cfg = config.get("benchmark", {})
     max_tokens = bench_cfg.get("max_output_len", 512)
 
@@ -163,7 +160,7 @@ def main():
             metrics = BenchmarkMetrics.from_timings(
                 timings,
                 framework="vLLM",
-                model_name=config["server"]["model"],
+                model_name=config["model"]["id"],
                 device="cuda",
             )
             reporter.add_result(metrics)

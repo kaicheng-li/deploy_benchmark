@@ -1,0 +1,25 @@
+Looking in indexes: http://mirrors.aliyun.com/pypi/simple
+Collecting tensorrt
+  Downloading tensorrt-11.1.0.106.tar.gz (16 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting tensorrt_cu13==11.1.0.106 (from tensorrt)
+  Downloading tensorrt_cu13-11.1.0.106.tar.gz (17 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting tensorrt_cu13_libs==11.1.0.106 (from tensorrt_cu13==11.1.0.106->tensorrt)
+  Downloading tensorrt_cu13_libs-11.1.0.106.tar.gz (15 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'canceled'

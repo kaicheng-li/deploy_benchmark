@@ -2,29 +2,28 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 from typing import Any
 
 import openvino as ov
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common.config import default_config_path, load_config as load_yaml_config, resolve_task_config
 from common.logger import setup_logger
 
 logger = setup_logger("openvino_convert")
 
 
-def load_config() -> dict[str, Any]:
-    with open("config.yaml", "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
 
 def main() -> None:
-    config = load_config()
-    mode = config["mode"]
-    cfg = config[mode]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=str(default_config_path(__file__)))
+    args = parser.parse_args()
+    config, config_path = load_yaml_config(args.config)
+    mode, cfg = resolve_task_config(config, config_path, ("onnx_file", "ir_dir", "ir_file", "image"))
 
     onnx_file = Path(cfg["onnx_file"])
     ir_file = Path(cfg["ir_file"])

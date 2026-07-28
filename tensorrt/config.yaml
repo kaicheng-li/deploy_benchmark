@@ -1,28 +1,23 @@
-# TensorRT-LLM 推理配置
-build:
-  # HuggingFace 模型路径
-  model_path: "Qwen/Qwen2-7B-Instruct"
+# TensorRT-LLM configuration. All relative paths are resolved from this file.
+model:
+  id: "Qwen3-8B-Instruct"
+  source: "huggingface"
+  path: "Qwen/Qwen3-8B-Instruct"
+  format: "transformers"
 
-  # TensorRT engine 构建参数
-  dtype: "float16"            # float16 / bfloat16 / int8 / int4
+build:
+  dtype: "float16"
   max_batch_size: 8
   max_input_len: 2048
   max_output_len: 512
   max_beam_width: 1
-
-  # 量化
-  quantization: null           # null / int8_sq / int4_awq / int8_kv_cache
-
-  # 插件
+  quantization: null
   use_gpt_attention_plugin: true
   use_gemm_plugin: false
-
-  # 输出路径
   engine_dir: "./trt_engines"
 
 runtime:
   engine_dir: "./trt_engines"
-  tokenizer_path: "Qwen/Qwen2-7B-Instruct"
 
 benchmark:
   warmup_requests: 10

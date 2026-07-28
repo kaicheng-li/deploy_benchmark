@@ -9,15 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 编译 llama.cpp
-RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git && \
-    cd llama.cpp && mkdir build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build . -j$(nproc) && \
-    cp bin/* /usr/local/bin/
+# Python binding; no project-local llama.cpp checkout is required.
 
-# Python 封装
-RUN pip3 install --no-cache-dir llama-cpp-python
+RUN pip3 install --no-cache-dir "llama-cpp-python>=0.3.34" pyyaml
 
 COPY llamacpp/ /app/llamacpp/
 COPY common/ /app/common/

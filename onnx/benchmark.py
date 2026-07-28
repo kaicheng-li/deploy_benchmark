@@ -5,6 +5,7 @@ Only two modes: vision (RF-DETR Seg) or qwen (Qwen).
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -12,10 +13,10 @@ from typing import Any
 
 import numpy as np
 import onnxruntime as ort
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common.config import default_config_path, load_config as load_yaml_config, resolve_task_config
 from common.logger import setup_logger
 
 logger = setup_logger("onnx_benchmark")
@@ -26,10 +27,6 @@ def force_utf8_stdio() -> None:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
 
-
-def load_config() -> dict[str, Any]:
-    with open("config.yaml", "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def create_session(cfg: dict[str, Any]) -> ort.InferenceSession:
@@ -132,9 +129,11 @@ def bench_qwen(cfg: dict[str, Any]) -> None:
 
 def main() -> None:
     force_utf8_stdio()
-    config = load_config()
-    mode = config["mode"]
-    cfg = config[mode]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=str(default_config_path(__file__)))
+    args = parser.parse_args()
+    config, config_path = load_yaml_config(args.config)
+    mode, cfg = resolve_task_config(config, config_path, ("onnx_file", "image"))
 
     if mode == "vision":
         bench_vision(cfg)

@@ -1,22 +1,33 @@
-# Only two OpenVINO modes: vision | qwen
-
+# OpenVINO configuration. All relative paths are resolved from this file.
 mode: "vision"
 
-vision:
-  onnx_file: "../onnx/onnx_models/vision.onnx"
-  model_path: "../models/rf-detr-seg-medium"
-  ir_dir: "./openvino_models"
-  ir_file: "./openvino_models/vision.xml"
-  image: "./0000000109.png"
-  threshold: 0.5
-  device: "CPU"
+models:
+  rf_detr_seg_medium:
+    id: "rf-detr-seg-medium"
+    source: "local"
+    path: "../models/rf-detr-seg-medium"
+    format: "transformers"
+  qwen2_1_5b:
+    id: "Qwen2-1.5B-Instruct"
+    source: "huggingface"
+    path: "Qwen/Qwen2-1.5B-Instruct"
+    format: "transformers"
 
-qwen:
-  onnx_file: "../onnx/onnx_models/qwen.onnx"
-  model_path: "Qwen/Qwen2-1.5B-Instruct"
-  ir_dir: "./openvino_models"
-  ir_file: "./openvino_models/qwen.xml"
-  prompt: "Hello, introduce yourself briefly."
-  max_new_tokens: 64
-  seq_len: 32
-  device: "CPU"
+tasks:
+  vision:
+    model: "rf_detr_seg_medium"
+    onnx_file: "../onnx/onnx_models/vision.onnx"
+    ir_dir: "./openvino_models"
+    ir_file: "./openvino_models/vision.xml"
+    image: "./0000000109.png"
+    threshold: 0.5
+    device: "CPU"
+  qwen:
+    model: "qwen2_1_5b"
+    onnx_file: "../onnx/onnx_models/qwen.onnx"
+    ir_dir: "./openvino_models"
+    ir_file: "./openvino_models/qwen.xml"
+    prompt: "Hello, introduce yourself briefly."
+    max_new_tokens: 64
+    seq_len: 32
+    device: "CPU"

@@ -180,7 +180,7 @@ huggingface-cli download Qwen/Qwen2-7B-Instruct --local-dir models/Qwen2-7B-Inst
 bash scripts/deploy_all.sh
 
 # 4. 分别转换/构建模型
-cd onnx    && python export_onnx.py --model ../models/Qwen2-7B-Instruct --output ./onnx_models
+cd onnx    && python export_onnx.py --config config.yaml
 cd openvino && python convert_model.py --config config.yaml
 cd tensorrt && python engine_builder.py --config config.yaml
 # llama.cpp: 需要先用 convert-hf-to-gguf.py 转成 GGUF
@@ -190,7 +190,7 @@ cd vllm     && python server.py --model ../models/Qwen2-7B-Instruct &
                python benchmark.py --config config.yaml
 cd tensorrt && python benchmark.py --config config.yaml
 cd onnx     && python benchmark.py --config config.yaml
-cd llamacpp/python && python benchmark.py --model ../../models/qwen2-q4.gguf
+cd llamacpp/python && python benchmark.py --config ../config.yaml
 cd openvino && python benchmark.py --config config.yaml
 
 # 6. 汇总对比报告

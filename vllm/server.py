@@ -9,13 +9,11 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import yaml
+from common.config import default_config_path, load_config, resolve_model_path
 
 
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def build_command(config: dict, model_override: str | None, port_override: int | None) -> list[str]:
@@ -24,7 +22,7 @@ def build_command(config: dict, model_override: str | None, port_override: int |
 
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
-        "--model", model_override or server_cfg["model"],
+        "--model", model_override or resolve_model_path(config["model"], config["_config_path"]),
         "--host", server_cfg.get("host", "0.0.0.0"),
         "--port", str(port_override or server_cfg.get("port", 8000)),
         "--dtype", server_cfg.get("dtype", "auto"),
@@ -42,12 +40,13 @@ def build_command(config: dict, model_override: str | None, port_override: int |
 
 def main():
     parser = argparse.ArgumentParser(description="启动 vLLM OpenAI 推理服务")
-    parser.add_argument("--config", type=str, default="config.yaml", help="配置文件路径")
+    parser.add_argument("--config", type=str, default=str(default_config_path(__file__)), help="配置文件路径")
     parser.add_argument("--model", type=str, default=None, help="模型名称或路径 (覆盖配置文件)")
     parser.add_argument("--port", type=int, default=None, help="服务端口 (覆盖配置文件)")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config, config_path = load_config(args.config)
+    config["_config_path"] = config_path
     cmd = build_command(config, args.model, args.port)
 
     print(f"[vLLM] 启动命令: {' '.join(cmd)}")

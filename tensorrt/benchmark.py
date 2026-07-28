@@ -10,21 +10,17 @@ import time
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.metrics import BenchmarkMetrics, TimingResult
 from common.reporter import BenchmarkReporter
+from common.config import default_config_path, load_config, resolve_model_path, resolve_path
 from common.logger import setup_logger
 from common.data_loader import DataLoader
 
 logger = setup_logger("tensorrt_benchmark")
 
-
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def load_runner(config: dict):
@@ -33,7 +29,7 @@ def load_runner(config: dict):
 
     runtime_cfg = config["runtime"]
     runner = ModelRunnerCpp.from_dir(
-        engine_dir=runtime_cfg["engine_dir"],
+        engine_dir=str(resolve_path(config["_config_path"], runtime_cfg["engine_dir"])),
         rank=0,
     )
     return runner
@@ -95,13 +91,14 @@ def run_benchmark(
 
 def main():
     parser = argparse.ArgumentParser(description="TensorRT-LLM 基准测试")
-    parser.add_argument("--config", type=str, default="config.yaml", help="配置文件")
+    parser.add_argument("--config", type=str, default=str(default_config_path(__file__)), help="配置文件")
     parser.add_argument("--data", type=str, default="../data/prompts.txt", help="测试数据")
     parser.add_argument("--concurrency", type=int, default=1, help="并发数(单 Runner 仅支持 1)")
     parser.add_argument("--output", type=str, default="../results", help="输出目录")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config, config_path = load_config(args.config)
+    config["_config_path"] = config_path
     bench_cfg = config.get("benchmark", {})
 
     data_path = Path(args.data)
@@ -136,7 +133,7 @@ def main():
         metrics = BenchmarkMetrics.from_timings(
             timings,
             framework="TensorRT-LLM",
-            model_name=Path(config["build"]["model_path"]).name,
+            model_name=config["model"]["id"],
             device="cuda",
             gpu_memory_mb=gpu_mem,
         )

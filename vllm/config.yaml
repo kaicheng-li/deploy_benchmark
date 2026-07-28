@@ -1,20 +1,25 @@
-# vLLM 推理配置
+# vLLM configuration. All relative paths are resolved from this file.
+model:
+  id: "Qwen2-7B-Instruct"
+  source: "huggingface"
+  path: "Qwen/Qwen2-7B-Instruct"
+  format: "transformers"
+
 server:
   host: "0.0.0.0"
   port: 8000
-  model: "Qwen/Qwen2-7B-Instruct"   # 替换为你的模型路径或 HuggingFace ID
   trust_remote_code: true
-  dtype: "auto"                       # auto / float16 / bfloat16
+  dtype: "auto"
   max_model_len: 4096
   gpu_memory_utilization: 0.90
-  tensor_parallel_size: 1             # GPU 数量
+  tensor_parallel_size: 1
   pipeline_parallel_size: 1
   max_num_seqs: 256
 
 benchmark:
   warmup_requests: 10
   num_requests: 100
-  max_concurrency: [1, 4, 8, 16, 32]  # 多并发测试
-  prompt_file: "../data/prompts.txt"   # 测试 prompt 文件
+  max_concurrency: [1, 4, 8, 16, 32]
+  prompt_file: "../data/prompts.txt"
   max_input_len: 1024
   max_output_len: 512

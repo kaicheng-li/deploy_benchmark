@@ -7,14 +7,15 @@ RF-DETR Seg and Qwen.
 from __future__ import annotations
 
 import os
+import argparse
 import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common.config import default_config_path, load_config as load_yaml_config, resolve_task_config
 from common.logger import setup_logger
 
 
@@ -27,16 +28,10 @@ def force_utf8_stdio() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
-def load_config() -> dict[str, Any]:
-    with open("config.yaml", "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def selected_config(config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    mode = config["mode"]
-    if mode not in {"vision", "qwen"}:
-        raise ValueError("config.yaml mode must be 'vision' or 'qwen'")
-    return mode, config[mode]
+def selected_config(
+    config: dict[str, Any], config_path: Path
+) -> tuple[str, dict[str, Any]]:
+    return resolve_task_config(config, config_path, ("onnx_file", "image"))
 
 
 def export_vision(cfg: dict[str, Any]) -> None:
@@ -174,7 +169,11 @@ def main() -> None:
         os.environ["OMP_NUM_THREADS"] = "1"
     if os.environ.get("MKL_NUM_THREADS") == "0":
         os.environ["MKL_NUM_THREADS"] = "1"
-    mode, cfg = selected_config(load_config())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=str(default_config_path(__file__)))
+    args = parser.parse_args()
+    config, config_path = load_yaml_config(args.config)
+    mode, cfg = selected_config(config, config_path)
     if mode == "vision":
         export_vision(cfg)
     elif mode == "qwen":

@@ -1,3 +1,4 @@
-llama-cpp-python>=0.2.90
+llama-cpp-python>=0.3.34
 torch>=2.4.0
 numpy>=1.26.0
+pyyaml>=6.0
