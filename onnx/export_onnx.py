@@ -6,6 +6,7 @@ RF-DETR Seg and Qwen.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,7 @@ def export_vision(cfg: dict[str, Any]) -> None:
             output_names=["logits", "pred_boxes", "pred_masks"],
             opset_version=opset,
             do_constant_folding=True,
+            dynamo=True,
         )
 
     import onnx
@@ -168,6 +170,10 @@ def export_qwen(cfg: dict[str, Any]) -> None:
 
 def main() -> None:
     force_utf8_stdio()
+    if os.environ.get("OMP_NUM_THREADS") == "0":
+        os.environ["OMP_NUM_THREADS"] = "1"
+    if os.environ.get("MKL_NUM_THREADS") == "0":
+        os.environ["MKL_NUM_THREADS"] = "1"
     mode, cfg = selected_config(load_config())
     if mode == "vision":
         export_vision(cfg)
