@@ -12,6 +12,11 @@ models:
     source: "huggingface"
     path: "Qwen/Qwen3-8B-Instruct"
     format: "transformers"
+  qwen3_vl_8b_instruct:
+    id: "Qwen3-VL-8B-Instruct"
+    source: "local"
+    path: "../models/Qwen3-VL-8B-Instruct"
+    format: "transformers"
 
 tasks:
   vision:
@@ -32,4 +37,19 @@ tasks:
     seq_len: 32
     warmup: 3
     iterations: 20
+    device: "CPU"
+  # Qwen3-VL 多模态：视觉塔 + 文本解码器两个 ONNX 图分别转 IR
+  qwen3vl:
+    model: "qwen3_vl_8b_instruct"
+    onnx_file: "../onnx/onnx_models/qwen3vl_decoder.onnx"
+    vision_onnx_file: "../onnx/onnx_models/qwen3vl_vision.onnx"
+    ir_dir: "./openvino_models"
+    ir_file: "./openvino_models/qwen3vl_decoder.xml"
+    vision_ir_file: "./openvino_models/qwen3vl_vision.xml"
+    image: "./0000000109.png"
+    prompt: "Describe this image in detail."
+    max_new_tokens: 64
+    seq_len: 1024
+    warmup: 3
+    iterations: 10
     device: "CPU"

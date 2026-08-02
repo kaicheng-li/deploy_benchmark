@@ -135,7 +135,8 @@ def bench_qwen3vl(cfg: dict[str, Any]) -> None:
 
     from qwen3vl_utils import Qwen3VLConstants, generate, prepare_inputs
 
-    session = create_session(cfg)
+    decoder_session = create_session(cfg)
+    vision_session = create_session({**cfg, "onnx_file": cfg["vision_onnx_file"]})
     processor = AutoProcessor.from_pretrained(cfg["model_path"], trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(cfg["model_path"], trust_remote_code=True)
     consts = Qwen3VLConstants.from_config(Qwen3VLConfig.from_pretrained(cfg["model_path"]))
@@ -153,14 +154,16 @@ def bench_qwen3vl(cfg: dict[str, Any]) -> None:
 
     logger.info(f"Warmup {warmup} rounds...")
     for _ in range(warmup):
-        generate(session, feeds, tokenizer, consts, max_tokens)
+        generate(vision_session, decoder_session, feeds, tokenizer, consts, max_tokens)
 
     logger.info(f"Benchmark {iters} iterations...")
     latencies = []
     total_output_tokens = 0
     for _ in range(iters):
         t0 = time.perf_counter()
-        _, _, output_tokens = generate(session, feeds, tokenizer, consts, max_tokens)
+        _, _, output_tokens = generate(
+            vision_session, decoder_session, feeds, tokenizer, consts, max_tokens
+        )
         latencies.append((time.perf_counter() - t0) * 1000)
         total_output_tokens += output_tokens
 

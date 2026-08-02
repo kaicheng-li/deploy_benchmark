@@ -14,8 +14,8 @@ models:
     format: "transformers"
   qwen3_vl_8b_instruct:
     id: "Qwen3-VL-8B-Instruct"
-    source: "huggingface"
-    path: "Qwen/Qwen3-VL-8B-Instruct"
+    source: "local"
+    path: "../models/Qwen3-VL-8B-Instruct"
     format: "transformers"
 
 tasks:
@@ -29,7 +29,8 @@ tasks:
     threads: 4
   qwen3vl:
     model: "qwen3_vl_8b_instruct"
-    onnx_file: "./onnx_models/qwen3vl.onnx"
+    onnx_file: "./onnx_models/qwen3vl_decoder.onnx"
+    vision_onnx_file: "./onnx_models/qwen3vl_vision.onnx"
     image: "./0000000109.png"
     prompt: "Describe this image in detail."
     max_new_tokens: 64
@@ -38,6 +39,9 @@ tasks:
     seq_len: 1024
     warmup: 3
     iterations: 10
+    # fp16 导出体积约 16GB（fp32 约 32GB，磁盘放不下）；有 GPU 时用 cuda 加速导出
+    dtype: float16
+    device: cuda
     opset_version: 19
     provider: "CPUExecutionProvider"
     threads: 4

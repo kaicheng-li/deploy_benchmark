@@ -14,8 +14,8 @@ models:
     format: transformers
   qwen3_vl_8b_instruct:
     id: Qwen3-VL-8B-Instruct
-    source: huggingface
-    path: Qwen/Qwen3-VL-8B-Instruct
+    source: local
+    path: ../models/Qwen3-VL-8B-Instruct
     format: transformers
 
 tasks:

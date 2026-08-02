@@ -1,34 +1,48 @@
 """Qwen3-VL 多模态 ONNX 链路的共享工具。
 
-导出约束（与 Qwen3-VL 结构强相关，改动 transformers 版本时需要复核）：
+导出采用两段式设计（与 llm-export 等社区方案一致），原因：
 
-1. Qwen3-VL 的 mRoPE position ids 计算依赖 token 数值（内部使用 ``tolist()``、
-   ``.item()`` 和逐 token 循环），无法被 ONNX 图追踪（dynamo=False）或编译
-   （dynamo=True 也会在数据相关分支上失败）。因此导出时把 ``position_ids``
-   作为显式输入，运行时在 Python/numpy 里计算（本模块 ``compute_rope_index``）。
+1. torch 2.9 的 ``torch.onnx.export`` 已强制走 ``torch.export``（dynamo）导出器，
+   它不允许图里出现依赖张量**数值**的 Python 调用。Qwen3-VL 视觉塔的
+   ``torch.linspace(0, N-1, h)``（h 来自 ``image_grid_thw`` 的值）就属于这类，
+   整模型导出会在 ``fast_pos_embed_interpolate`` 处报
+   ``GuardOnDataDependentSymNode``。
 
-2. 模型内部的 ``masked_scatter``（图像 embedding 占位符合并）与
-   ``torch.split``（按 ``image_grid_thw`` 切分视觉特征）都是数据相关算子。
-   为让导出稳定，ONNX 图使用静态 shape：固定 ``seq_len`` 与固定图像
-   （``pixel_values`` / ``image_grid_thw`` 尺寸固定）。推理时文本长度被
-   padding 到 ``seq_len``，每次解码只前移一个 attention mask 位。
+2. 整模型 forward 里还有其它数据相关控制流：mRoPE position ids 的逐 token
+   循环（``tolist()``/``.item()``）、图像占位符数量校验（``mask.sum()`` 参与
+   Python ``if``）。这些都无法进图。
 
-3. 导出时强制 eager attention（视觉塔和文本塔都关闭 SDPA/FlashAttention），
-   避免 attention 算子在 ONNX 导出时无法分解。
+因此：
 
-推理阶段（``inference.py`` / ``benchmark.py``）没有 KV cache：每一步都把
-完整序列重新过一遍图并重算视觉特征。这与本项目 Qwen3 文本链路（onnx
-``run_qwen3`` / ``bench_qwen3``）的做法一致，功能正确但速度较慢。
+- **视觉塔**（vision.onnx）: ``pixel_values -> image_embeds + deepstack 特征``。
+  导出时把 ``image_grid_thw`` 硬编码为 Python 常量（静态图：固定图片尺寸 ->
+  固定 grid），绕开 ``linspace``/``torch.split`` 的数据相关问题。
+- **文本解码器**（decoder.onnx）: ``input_ids + attention_mask + position_ids +
+  image_embeds + deepstack_embeds -> logits``。position_ids 在 numpy 里算好作为
+  显式输入；图像 embedding 合并（``masked_scatter``）和 deepstack 注入由
+  ``Qwen3VLDecoderWrapper`` 用纯 tensor 算子完成，不触发数据相关 guard。
+
+  ``attention_mask`` 也以 4D 浮点掩码（因果 + padding，0/-inf）作为显式输入：
+  HF 的 ``create_causal_mask`` 遇到 4D 掩码会 early-exit 原样返回，从而绕开
+  transformers 4.57 内部用 ``torch.vmap`` 构造掩码的路径（TorchScript 追踪器
+  无法处理 vmap）。
+
+推理阶段无 KV cache：vision 图每个请求跑一次，decoder 图每步跑一次
+（padding 到固定 ``seq_len``，逐步前移 attention mask），与项目里 Qwen3
+文本链路的做法一致。
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 from PIL import Image
+from torch import nn
 
 
 @dataclass(frozen=True)
@@ -61,7 +75,7 @@ def compute_rope_index(
     Args:
         input_ids: (1, seq_len) int64，已 padding。
         attention_mask: (1, seq_len) int64，1 表示真实 token。
-        image_grid_thw: (num_images, 3) int64，[t, h, w] 合并后的网格。
+        image_grid_thw: (num_images, 3) int64，[t, h, w] 合并前的网格。
         consts: 模型常量。
 
     Returns:
@@ -141,14 +155,29 @@ def prepare_inputs(
     prompt: str,
     seq_len: int,
 ) -> dict[str, np.ndarray]:
-    """用 processor 编码图片+文本，并 padding 到导出图要求的固定 ``seq_len``。"""
-    image = Image.open(image_path).convert("RGB")
-    encoded = processor(images=image, text=prompt, return_tensors="np")
+    """用 processor 编码图片+文本，并 padding 到导出图要求的固定 ``seq_len``。
 
-    input_ids = np.asarray(encoded["input_ids"], dtype=np.int64).reshape(1, -1)
-    attention_mask = np.asarray(encoded["attention_mask"], dtype=np.int64).reshape(1, -1)
-    pixel_values = np.asarray(encoded["pixel_values"], dtype=np.float32)
-    image_grid_thw = np.asarray(encoded["image_grid_thw"], dtype=np.int64)
+    Qwen3-VL 的 fast image processor 只支持 ``return_tensors="pt"``
+    （传 ``"np"`` 会抛 ValueError），因此先取 torch 张量再转 numpy。
+    新版 transformers 的 processor 不再自动插入图像占位符，文本里必须自带
+    ``<|vision_start|><|image_pad|><|vision_end|>``（chat template 就是这么做
+    的），否则模型拿不到图像 token，position ids 也无法正确计算。
+    """
+    image = Image.open(image_path).convert("RGB")
+    image_token = getattr(processor, "image_token", "<|image_pad|>")
+    prompt_with_image = f"<|vision_start|>{image_token}<|vision_end|>{prompt}"
+    encoded = processor(images=image, text=prompt_with_image, return_tensors="pt")
+
+    input_ids = encoded["input_ids"].cpu().numpy().astype(np.int64).reshape(1, -1)
+    attention_mask = encoded["attention_mask"].cpu().numpy().astype(np.int64).reshape(1, -1)
+    pixel_values = encoded["pixel_values"]
+    if isinstance(pixel_values, (tuple, list)):
+        pixel_values = torch.cat(list(pixel_values), dim=0)
+    pixel_values = pixel_values.cpu().numpy().astype(np.float32)
+    image_grid_thw = encoded["image_grid_thw"]
+    if isinstance(image_grid_thw, (tuple, list)):
+        image_grid_thw = torch.cat(list(image_grid_thw), dim=0)
+    image_grid_thw = image_grid_thw.cpu().numpy().astype(np.int64)
 
     length = input_ids.shape[1]
     if length > seq_len:
@@ -173,35 +202,307 @@ def prepare_inputs(
     }
 
 
+def _pos_embed_constants(
+    num_grid_per_side: int, h: int, w: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """numpy 预计算 ``fast_pos_embed_interpolate`` 的索引与权重（导出常量）。"""
+    h_idxs = np.linspace(0, num_grid_per_side - 1, h)
+    w_idxs = np.linspace(0, num_grid_per_side - 1, w)
+    h_floor = np.floor(h_idxs).astype(np.int64)
+    w_floor = np.floor(w_idxs).astype(np.int64)
+    h_ceil = np.minimum(h_floor + 1, num_grid_per_side - 1)
+    w_ceil = np.minimum(w_floor + 1, num_grid_per_side - 1)
+    dh = h_idxs - h_floor
+    dw = w_idxs - w_floor
+    base_h = h_floor * num_grid_per_side
+    base_h_ceil = h_ceil * num_grid_per_side
+    indices = np.stack(
+        [
+            (base_h[:, None] + w_floor[None, :]).ravel(),
+            (base_h[:, None] + w_ceil[None, :]).ravel(),
+            (base_h_ceil[:, None] + w_floor[None, :]).ravel(),
+            (base_h_ceil[:, None] + w_ceil[None, :]).ravel(),
+        ]
+    )
+    weights = np.stack(
+        [
+            ((1 - dh)[:, None] * (1 - dw)[None, :]).ravel(),
+            ((1 - dh)[:, None] * dw[None, :]).ravel(),
+            (dh[:, None] * (1 - dw)[None, :]).ravel(),
+            (dh[:, None] * dw[None, :]).ravel(),
+        ]
+    )
+    return indices.astype(np.int64), weights.astype(np.float32)
+
+
+def prepare_vision_for_export(visual: nn.Module, image_grid_thw: np.ndarray) -> None:
+    """把视觉塔替换为 Python 常量驱动的前向，使 torch.export 可追踪。
+
+    Qwen3-VL 视觉塔的 pos/rot embedding（``torch.linspace``、``.tolist()``）
+    和 attention 分块（``torch.split(lengths.tolist())``）都依赖
+    ``image_grid_thw`` 的数值，dynamo 下会触发 ``GuardOnDataDependentSymNode``。
+    本项目导出为固定图像 -> 固定 grid，因此：
+    - 用 numpy 预计算 position embedding 索引/权重，注册为 buffer（图中常量）；
+    - 用等价常量版本替换 ``visual.forward`` 和各 block 的 ``attn.forward``。
+    仅支持单帧图片（t=1）。
+    """
+    from types import MethodType
+
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import (
+        apply_rotary_pos_emb_vision,
+        eager_attention_forward,
+    )
+
+    grid = np.asarray(image_grid_thw, dtype=np.int64)
+    t, h, w = int(grid[0, 0]), int(grid[0, 1]), int(grid[0, 2])
+    if t != 1:
+        raise NotImplementedError("ONNX Qwen3-VL 视觉塔目前只支持单帧图片 (t=1)")
+    merge = int(visual.config.spatial_merge_size)
+    num_grid = int(visual.num_grid_per_side)
+    device = visual.pos_embed.weight.device
+    dtype = visual.pos_embed.weight.dtype
+
+    idx, weight = _pos_embed_constants(num_grid, h, w)
+    visual.register_buffer("_export_pos_idx", torch.tensor(idx, dtype=torch.long, device=device))
+    visual.register_buffer(
+        "_export_pos_weight", torch.tensor(weight, dtype=dtype, device=device)
+    )
+
+    def vision_forward(self: nn.Module, pixel_values: torch.Tensor) -> tuple[torch.Tensor, list]:
+        hidden_states = self.patch_embed(pixel_values)
+        pos_embeds = self.pos_embed(self._export_pos_idx) * self._export_pos_weight[:, :, None]
+        patch_pos_embeds = pos_embeds[0] + pos_embeds[1] + pos_embeds[2] + pos_embeds[3]
+        patch_pos_embeds = (
+            patch_pos_embeds.view(t, h // merge, merge, w // merge, merge, -1)
+            .permute(0, 1, 3, 2, 4, 5)
+            .flatten(0, 4)
+        )
+        hidden_states = hidden_states + patch_pos_embeds
+
+        freq_table = self.rotary_pos_emb(max(h, w))
+        block_rows = torch.arange(h // merge, device=device)
+        block_cols = torch.arange(w // merge, device=device)
+        intra_row = torch.arange(merge, device=device)
+        intra_col = torch.arange(merge, device=device)
+        row_idx = block_rows[:, None, None, None] * merge + intra_row[None, None, :, None]
+        col_idx = block_cols[None, :, None, None] * merge + intra_col[None, None, None, :]
+        row_idx = row_idx.expand(h // merge, w // merge, merge, merge).reshape(-1)
+        col_idx = col_idx.expand(h // merge, w // merge, merge, merge).reshape(-1)
+        coords = torch.stack((row_idx, col_idx), dim=-1)
+        rotary_pos_emb = freq_table[coords].flatten(1)
+
+        seq_len, _ = hidden_states.size()
+        hidden_states = hidden_states.reshape(seq_len, -1)
+        rotary_pos_emb = rotary_pos_emb.reshape(seq_len, -1)
+        emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
+        position_embeddings = (emb.cos(), emb.sin())
+
+        cu_seqlens = torch.tensor([0, h * w], dtype=torch.int32, device=hidden_states.device)
+        deepstack_feature_lists = []
+        for layer_num, blk in enumerate(self.blocks):
+            hidden_states = blk(
+                hidden_states,
+                cu_seqlens=cu_seqlens,
+                position_embeddings=position_embeddings,
+            )
+            if layer_num in self.deepstack_visual_indexes:
+                deepstack_feature = self.deepstack_merger_list[
+                    self.deepstack_visual_indexes.index(layer_num)
+                ](hidden_states)
+                deepstack_feature_lists.append(deepstack_feature)
+        hidden_states = self.merger(hidden_states)
+        return hidden_states, deepstack_feature_lists
+
+    visual.forward = MethodType(vision_forward, visual)
+
+    def vision_attn_forward(
+        self: nn.Module,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        rotary_pos_emb: torch.Tensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        # 单图场景等价于 HF 的 eager 分支，但跳过 torch.split(lengths.tolist())
+        seq_length = hidden_states.shape[0]
+        query_states, key_states, value_states = (
+            self.qkv(hidden_states)
+            .reshape(seq_length, 3, self.num_heads, -1)
+            .permute(1, 0, 2, 3)
+            .unbind(0)
+        )
+        cos, sin = position_embeddings
+        query_states, key_states = apply_rotary_pos_emb_vision(query_states, key_states, cos, sin)
+        query_states = query_states.transpose(0, 1).unsqueeze(0)
+        key_states = key_states.transpose(0, 1).unsqueeze(0)
+        value_states = value_states.transpose(0, 1).unsqueeze(0)
+        attn_output, _ = eager_attention_forward(
+            self,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask=None,
+            scaling=self.scaling,
+            dropout=0.0 if not self.training else self.attention_dropout,
+            is_causal=False,
+            **kwargs,
+        )
+        attn_output = attn_output.reshape(seq_length, -1).contiguous()
+        return self.proj(attn_output)
+
+    for block in visual.blocks:
+        block.attn.forward = MethodType(vision_attn_forward, block.attn)
+
+
+class Qwen3VLVisionWrapper(nn.Module):
+    """视觉塔导出包装：pixel_values -> (image_embeds, deepstack_embeds)。
+
+    构造时调用 ``prepare_vision_for_export`` 把视觉塔替换为常量驱动版本
+    （grid 已固化），因此前向只接收 ``pixel_values``。
+    """
+
+    def __init__(self, visual: nn.Module, image_grid_thw: np.ndarray) -> None:
+        super().__init__()
+        self.visual = visual
+        prepare_vision_for_export(visual, image_grid_thw)
+
+    def forward(self, pixel_values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        image_embeds, deepstack_features = self.visual(pixel_values)
+        return image_embeds, torch.stack(deepstack_features, dim=0)
+
+
+class Qwen3VLDecoderWrapper(nn.Module):
+    """文本解码器导出包装：input_ids + position_ids + 视觉特征 -> logits。
+
+    图像 embedding 合并（``masked_scatter``）和 deepstack 注入都是纯 tensor
+    算子，可由 torch.export 追踪；mRoPE position ids 由调用方算好传入。
+
+    DeepStack 注入不使用 HF 原版的 ``hidden_states[mask]`` 动态 gather
+    （ONNX shape inference 无法推导 gather 后的维度），而是把视觉特征展开成
+    全序列形式（图像位置为特征值、其余为 0），用静态 shape 的 Add 完成。
+    """
+
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+        language_model = model.model.language_model
+
+        def _plain_deepstack(
+            hidden_states: torch.Tensor,
+            visual_pos_masks: torch.Tensor,
+            visual_embeds: torch.Tensor,
+        ) -> torch.Tensor:
+            # visual_embeds 为全序列形式（非图像位置为 0），等价于 HF 的
+            # hidden_states[mask] += features，但形状全程静态
+            return hidden_states + visual_embeds
+
+        language_model._deepstack_process = _plain_deepstack
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor,
+        image_embeds: torch.Tensor,
+        deepstack_embeds: torch.Tensor,
+    ) -> torch.Tensor:
+        image_token_id = int(self.model.config.image_token_id)
+        hidden_size = int(self.model.config.text_config.hidden_size)
+        num_layers, _, _ = deepstack_embeds.shape
+        image_mask2d = input_ids == image_token_id
+        image_mask = image_mask2d.unsqueeze(-1).expand(-1, -1, hidden_size)
+
+        inputs_embeds = self.model.get_input_embeddings()(input_ids)
+        inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+
+        # 紧凑 (L, n_vis, hidden) -> 全序列 (L, seq_len, hidden)
+        mask3d = (
+            image_mask2d.unsqueeze(-1)
+            .expand(-1, -1, hidden_size)
+            .expand(num_layers, -1, -1)
+        )
+        deepstack_full = torch.zeros(
+            num_layers,
+            input_ids.shape[1],
+            hidden_size,
+            dtype=inputs_embeds.dtype,
+            device=inputs_embeds.device,
+        )
+        deepstack_full = deepstack_full.masked_scatter(mask3d, deepstack_embeds.reshape(-1))
+
+        outputs = self.model.model.language_model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            use_cache=False,
+            visual_pos_masks=image_mask[..., 0],
+            deepstack_visual_embeds=deepstack_full,
+        )
+        return self.model.lm_head(outputs.last_hidden_state)
+
+
+def build_causal_mask(attention_mask_2d: np.ndarray, dtype: np.dtype = np.float16) -> np.ndarray:
+    """由 2D padding mask 构建 4D 因果掩码（0 参与注意力，-inf 屏蔽）。
+
+    shape: (1, 1, seq_len, seq_len)。4D 掩码作为 decoder ONNX 图的显式输入，
+    使 HF ``create_causal_mask`` early-exit，绕开 vmap 路径。
+    """
+    batch, seq_len = attention_mask_2d.shape
+    q_idx = np.arange(seq_len, dtype=np.int64)[None, None, :, None]
+    kv_idx = np.arange(seq_len, dtype=np.int64)[None, None, None, :]
+    causal = kv_idx <= q_idx
+    padding = attention_mask_2d[:, None, None, :].astype(bool)
+    mask = causal & padding
+    min_value = np.finfo(np.float16).min if np.dtype(dtype) == np.float16 else np.finfo(np.float32).min
+    out = np.where(mask, np.zeros((), dtype=dtype), np.asarray(min_value, dtype=dtype))
+    return np.ascontiguousarray(out.astype(dtype))
+
+
+def run_vision(
+    vision_session: Any,
+    pixel_values: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """跑视觉塔 ONNX 图，返回 (image_embeds, deepstack_embeds)。"""
+    image_embeds, deepstack_embeds = vision_session.run(
+        ["image_embeds", "deepstack_embeds"],
+        {"pixel_values": np.ascontiguousarray(pixel_values.astype(np.float16))},
+    )
+    return np.ascontiguousarray(image_embeds), np.ascontiguousarray(deepstack_embeds)
+
+
 def generate(
-    session: Any,
+    vision_session: Any,
+    decoder_session: Any,
     feeds: dict[str, np.ndarray],
     tokenizer: Any,
     consts: Qwen3VLConstants,
     max_new_tokens: int = 64,
 ) -> tuple[str, int, int]:
-    """基于固定 shape ONNX 图的贪心解码（无 KV cache，逐步前移 mask）。"""
+    """贪心解码：vision 图跑一次，decoder 图逐步跑（无 KV cache，前移 mask）。"""
+    image_embeds, deepstack_embeds = run_vision(vision_session, feeds["pixel_values"])
+
     input_ids = feeds["input_ids"]
     attention_mask = feeds["attention_mask"]
-    pixel_values = feeds["pixel_values"]
-    image_grid_thw = feeds["image_grid_thw"]
     seq_len = input_ids.shape[1]
     start_len = int(attention_mask.sum())
     eos_token_id = tokenizer.eos_token_id
 
     for step in range(max_new_tokens):
         if start_len + step >= seq_len:
-            logger_warning("到达最大序列长度 %s，提前停止", seq_len)
+            logging.getLogger("qwen3vl_utils").warning(
+                "到达最大序列长度 %s，提前停止", seq_len
+            )
             break
-        position_ids, _ = compute_rope_index(input_ids, attention_mask, image_grid_thw, consts)
-        logits = session.run(
+        position_ids, _ = compute_rope_index(input_ids, attention_mask, feeds["image_grid_thw"], consts)
+        mask_4d = build_causal_mask(attention_mask)
+        logits = decoder_session.run(
             ["logits"],
             {
                 "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "pixel_values": pixel_values,
-                "image_grid_thw": image_grid_thw,
+                "attention_mask": mask_4d,
                 "position_ids": position_ids,
+                "image_embeds": image_embeds,
+                "deepstack_embeds": deepstack_embeds,
             },
         )[0]
         next_id = int(np.argmax(logits[0, start_len + step]))
@@ -214,9 +515,3 @@ def generate(
     generated = input_ids[0, start_len:end_len]
     text = tokenizer.decode(generated, skip_special_tokens=True)
     return text, start_len, end_len - start_len
-
-
-def logger_warning(message: str, *args: Any) -> None:
-    import logging
-
-    logging.getLogger("qwen3vl_utils").warning(message, *args)

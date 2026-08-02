@@ -36,7 +36,7 @@ def force_utf8_stdio() -> None:
 def selected_config(
     config: dict[str, Any], config_path: Path
 ) -> tuple[str, dict[str, Any]]:
-    return resolve_task_config(config, config_path, ("onnx_file", "image"))
+    return resolve_task_config(config, config_path, ("onnx_file", "vision_onnx_file", "image"))
 
 
 def create_session(cfg: dict[str, Any]):
@@ -126,7 +126,7 @@ def run_qwen3(cfg: dict[str, Any]) -> None:
 def run_qwen3vl(cfg: dict[str, Any]) -> None:
     """Qwen3-VL 多模态推理：图片 + 文本 -> 文本。
 
-    运行前需要先执行 export_onnx.py --mode qwen3vl 生成 qwen3vl.onnx。
+    运行前需要先执行 export_onnx.py --mode qwen3vl 生成视觉塔 + 解码器两个图。
     ONNX 图是静态 shape，推理时图片必须与导出时使用同一预处理尺寸
     （默认都是 onnx/0000000109.png，或同一 max_pixels/min_pixels 配置）。
     """
@@ -134,7 +134,8 @@ def run_qwen3vl(cfg: dict[str, Any]) -> None:
 
     from qwen3vl_utils import Qwen3VLConstants, generate, prepare_inputs
 
-    session = create_session(cfg)
+    decoder_session = create_session(cfg)
+    vision_session = create_session({**cfg, "onnx_file": cfg["vision_onnx_file"]})
     processor = AutoProcessor.from_pretrained(cfg["model_path"], trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(cfg["model_path"], trust_remote_code=True)
     consts = Qwen3VLConstants.from_config(Qwen3VLConfig.from_pretrained(cfg["model_path"]))
@@ -147,7 +148,8 @@ def run_qwen3vl(cfg: dict[str, Any]) -> None:
         int(cfg.get("seq_len", 1024)),
     )
     text, input_tokens, output_tokens = generate(
-        session,
+        vision_session,
+        decoder_session,
         feeds,
         tokenizer,
         consts,

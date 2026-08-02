@@ -21,27 +21,37 @@ logger = setup_logger("openvino_convert")
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(BACKEND_DIR / "config.yaml"))
-    parser.add_argument("--mode", choices=("vision", "qwen3"), help="Override config.yaml mode")
+    parser.add_argument(
+        "--mode", choices=("vision", "qwen3", "qwen3vl"), help="Override config.yaml mode"
+    )
     args = parser.parse_args()
     config, config_path = load_yaml_config(args.config)
     if args.mode:
         config["mode"] = args.mode
-    mode, cfg = resolve_task_config(config, config_path, ("onnx_file", "ir_dir", "ir_file", "image"))
-
-    onnx_file = Path(cfg["onnx_file"])
-    ir_file = Path(cfg["ir_file"])
-    ir_dir = ir_file.parent
-    model_name = ir_file.stem
-
-    ir_dir.mkdir(parents=True, exist_ok=True)
+    mode, cfg = resolve_task_config(
+        config,
+        config_path,
+        ("onnx_file", "vision_onnx_file", "ir_dir", "ir_file", "vision_ir_file", "image"),
+    )
 
     import openvino as ov
 
-    logger.info(f"Converting ONNX → IR: mode={mode}, onnx={onnx_file}")
-    # 同目录 <name>.onnx.data 外部权重会被自动加载
-    model = ov.convert_model(str(onnx_file))
-    ov.save_model(model, str(ir_file), compress_to_fp16=False)
-    logger.info(f"IR saved: {ir_file}")
+    def convert_one(onnx_path: str | Path, ir_path: str | Path) -> None:
+        onnx_path = Path(onnx_path)
+        ir_path = Path(ir_path)
+        ir_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Converting ONNX → IR: onnx={onnx_path}")
+        # 同目录 <name>.onnx.data 外部权重会被自动加载
+        model = ov.convert_model(str(onnx_path))
+        ov.save_model(model, str(ir_path), compress_to_fp16=False)
+        logger.info(f"IR saved: {ir_path}")
+
+    if mode == "qwen3vl":
+        # 两段式：视觉塔 + 文本解码器各转一份 IR
+        convert_one(cfg["vision_onnx_file"], cfg["vision_ir_file"])
+        convert_one(cfg["onnx_file"], cfg["ir_file"])
+    else:
+        convert_one(cfg["onnx_file"], cfg["ir_file"])
 
 
 if __name__ == "__main__":

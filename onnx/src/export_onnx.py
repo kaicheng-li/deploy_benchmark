@@ -33,7 +33,7 @@ def force_utf8_stdio() -> None:
 def selected_config(
     config: dict[str, Any], config_path: Path
 ) -> tuple[str, dict[str, Any]]:
-    return resolve_task_config(config, config_path, ("onnx_file", "image"))
+    return resolve_task_config(config, config_path, ("onnx_file", "vision_onnx_file", "image"))
 
 
 def export_vision(cfg: dict[str, Any]) -> None:
@@ -166,67 +166,67 @@ def export_qwen3(cfg: dict[str, Any]) -> None:
 
 
 def export_qwen3vl(cfg: dict[str, Any]) -> None:
-    """Export Qwen3-VL (multimodal) as a single ONNX graph.
+    """Export Qwen3-VL (multimodal) as two ONNX graphs: vision tower + text decoder.
 
-    原理：
-    - Qwen3-VL 内部图像 embedding 的合并（masked_scatter / torch.split）依赖
-      token 数值，无法用动态 shape 导出，因此导出图采用静态 shape：
-      固定 seq_len（文本 padding 到该长度）与固定图像尺寸。
-    - mRoPE position_ids 的求解是逐 token 的 Python 控制流，无法进图，因此
-      把 position_ids 作为显式输入，运行时由 qwen3vl_utils.compute_rope_index
-      在 numpy 中计算。
-    - 强制 eager attention，避免 SDPA/FlashAttention 无法导出。
+    两段式导出（详见 qwen3vl_utils.py 模块 docstring）：
+    - 视觉塔：pixel_values -> image_embeds + deepstack；image_grid_thw 固化为
+      Python 常量，绕开 torch.export 对数据相关数值（linspace 长度等）的限制。
+    - 文本解码器：input_ids + position_ids + 视觉特征 -> logits；position_ids
+      由调用方在 numpy 中计算（逐 token 控制流无法进图）。
+    两者都是静态 shape（固定 seq_len 与固定图像尺寸）。
     """
     import torch
-    from torch import nn
     from transformers import AutoProcessor, AutoTokenizer, Qwen3VLForConditionalGeneration
 
-    from qwen3vl_utils import Qwen3VLConstants, prepare_inputs
+    from qwen3vl_utils import (
+        Qwen3VLConstants,
+        Qwen3VLDecoderWrapper,
+        Qwen3VLVisionWrapper,
+        build_causal_mask,
+        prepare_inputs,
+    )
 
     model_path = cfg["model_path"]
     onnx_file = Path(cfg["onnx_file"])
+    vision_onnx_file = Path(cfg["vision_onnx_file"])
     onnx_file.parent.mkdir(parents=True, exist_ok=True)
     seq_len = int(cfg.get("seq_len", 1024))
     opset = max(int(cfg.get("opset_version", 18)), 18)
+    dtype_map = {
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "fp32": torch.float32,
+        "fp16": torch.float16,
+    }
+    dtype_name = str(cfg.get("dtype", "float32")).lower()
+    if dtype_name not in dtype_map:
+        raise ValueError(f"Unsupported dtype: {dtype_name} (use float32/fp32 or float16/fp16)")
+    torch_dtype = dtype_map[dtype_name]
+    device_name = str(cfg.get("device", "cpu")).lower()
+    if device_name == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("device=cuda 但当前环境没有可用 CUDA，请改成 device: cpu")
+    device = torch.device("cuda" if device_name == "cuda" else "cpu")
 
     logger.info(f"Export Qwen3-VL model: {model_path}")
-    logger.info(f"Output: {onnx_file} (seq_len={seq_len}, opset={opset})")
+    logger.info(
+        f"Outputs: {vision_onnx_file} + {onnx_file} "
+        f"(seq_len={seq_len}, opset={opset}, "
+        f"dtype={dtype_name}, device={device_name})"
+    )
 
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         model_path,
         trust_remote_code=True,
-        torch_dtype=torch.float32,
+        torch_dtype=torch_dtype,
         attn_implementation="eager",
     ).eval()
+    model = model.to(device)
     # 视觉塔与文本塔都走 eager attention（from_pretrained 只设置顶层 config）
     model.config._attn_implementation = "eager"
     model.visual.config._attn_implementation = "eager"
     model.language_model.config._attn_implementation = "eager"
-
-    class Qwen3VLWrapper(nn.Module):
-        def __init__(self, qwen3vl: Qwen3VLForConditionalGeneration) -> None:
-            super().__init__()
-            self.model = qwen3vl
-
-        def forward(
-            self,
-            input_ids: torch.Tensor,
-            attention_mask: torch.Tensor,
-            pixel_values: torch.Tensor,
-            image_grid_thw: torch.Tensor,
-            position_ids: torch.Tensor,
-        ) -> torch.Tensor:
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                pixel_values=pixel_values,
-                image_grid_thw=image_grid_thw,
-                position_ids=position_ids,
-                use_cache=False,
-            )
-            return outputs.logits
 
     consts = Qwen3VLConstants.from_config(model.config)
     feeds = prepare_inputs(
@@ -238,44 +238,73 @@ def export_qwen3vl(cfg: dict[str, Any]) -> None:
     )
 
     def to_tensor(array):
-        return torch.from_numpy(array)
+        return torch.from_numpy(array).to(device)
 
     input_ids = to_tensor(feeds["input_ids"])
-    attention_mask = to_tensor(feeds["attention_mask"])
-    pixel_values = to_tensor(feeds["pixel_values"])
-    image_grid_thw = to_tensor(feeds["image_grid_thw"])
+    attention_mask_2d = to_tensor(feeds["attention_mask"])
+    attention_mask_4d = to_tensor(build_causal_mask(feeds["attention_mask"]))
+    pixel_values = to_tensor(feeds["pixel_values"]).to(torch_dtype)
 
     with torch.no_grad():
+        # 视觉塔导出（grid 固化为常量）
+        vision_wrapper = Qwen3VLVisionWrapper(model.visual, feeds["image_grid_thw"]).eval()
+        torch.onnx.export(
+            vision_wrapper,
+            (pixel_values,),
+            str(vision_onnx_file),
+            input_names=["pixel_values"],
+            output_names=["image_embeds", "deepstack_embeds"],
+            opset_version=opset,
+            do_constant_folding=True,
+            dynamo=True,
+        )
+        logger.info(f"Vision tower exported: {vision_onnx_file}")
+
+        # 示例视觉特征（形状与真实一致即可，数值不影响 decoder 图结构）
+        vision_out = vision_wrapper(pixel_values)
+        image_embeds = torch.zeros_like(vision_out[0])
+        deepstack_embeds = torch.zeros_like(vision_out[1])
+
+        # 文本解码器导出
         position_ids, _ = model.model.get_rope_index(
             input_ids,
-            image_grid_thw,
+            to_tensor(feeds["image_grid_thw"]),
             None,
-            attention_mask=attention_mask,
+            attention_mask=attention_mask_2d,
         )
-
-        wrapper = Qwen3VLWrapper(model).eval()
+        decoder_wrapper = Qwen3VLDecoderWrapper(model).eval()
         torch.onnx.export(
-            wrapper,
-            (input_ids, attention_mask, pixel_values, image_grid_thw, position_ids),
+            decoder_wrapper,
+            (
+                input_ids,
+                attention_mask_4d,
+                position_ids,
+                image_embeds,
+                deepstack_embeds,
+            ),
             str(onnx_file),
             input_names=[
                 "input_ids",
                 "attention_mask",
-                "pixel_values",
-                "image_grid_thw",
                 "position_ids",
+                "image_embeds",
+                "deepstack_embeds",
             ],
             output_names=["logits"],
             opset_version=opset,
             do_constant_folding=True,
+            dynamo=True,
         )
+        logger.info(f"Text decoder exported: {onnx_file}")
 
     import onnx
 
     onnx.checker.check_model(str(onnx_file))
+    onnx.checker.check_model(str(vision_onnx_file))
+    visual_tokens = int(feeds["image_grid_thw"].prod(-1) // consts.spatial_merge_size**2)
     logger.info(
-        f"Qwen3-VL export finished: {onnx_file} "
-        f"(image tokens={int(image_grid_thw.prod(-1) // consts.spatial_merge_size ** 2)})"
+        f"Qwen3-VL export finished: {vision_onnx_file} + {onnx_file} "
+        f"(image tokens={visual_tokens})"
     )
 
 
