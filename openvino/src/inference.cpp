@@ -1,5 +1,5 @@
 /**
- * OpenVINO C++ inference — vision (RF-DETR Seg) and qwen.
+ * OpenVINO C++ inference — vision (RF-DETR Seg) and qwen3.
  */
 
 #include <algorithm>
@@ -77,12 +77,15 @@ deploy_bench::BenchResult run_vision(const std::string& model_path,
     ov::Tensor mask_tensor(ov::element::i64, mask_shape, mask_data.data());
 
     ov::InferRequest infer = compiled.create_infer_request();
-    infer.set_input_tensor(pixel_tensor);
-    // set pixel_mask if model has it
-    for (auto& input : compiled.inputs()) {
-        std::string name = input.get_any_name();
-        if (name.find("mask") != std::string::npos)
+    for (const auto& input : compiled.inputs()) {
+        const std::string name = input.get_any_name();
+        if (name == "pixel_values") {
+            infer.set_tensor(name, pixel_tensor);
+        } else if (name == "pixel_mask") {
             infer.set_tensor(name, mask_tensor);
+        } else {
+            throw std::runtime_error("Unexpected RF-DETR input: " + name);
+        }
     }
 
     for (int i = 0; i < 10; i++) infer.infer();
@@ -100,7 +103,7 @@ deploy_bench::BenchResult run_vision(const std::string& model_path,
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  qwen
+//  qwen3
 // ══════════════════════════════════════════════════════════════════
 
 std::vector<int64_t> random_tokens(int seq_len, int vocab_size = 151936) {

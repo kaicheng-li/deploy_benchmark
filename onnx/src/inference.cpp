@@ -1,5 +1,5 @@
 /**
- * ONNX Runtime C++ inference — vision (RF-DETR Seg) and qwen.
+ * ONNX Runtime C++ inference — vision (RF-DETR Seg) and qwen3.
  *
  * Build with cmake and link onnxruntime.
  */
@@ -146,7 +146,7 @@ deploy_bench::BenchResult run_vision(OrtSession& ctx,
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  qwen
+//  qwen3
 // ══════════════════════════════════════════════════════════════════
 
 std::vector<int64_t> random_tokens(int seq_len, int vocab_size = 151936) {
@@ -161,7 +161,7 @@ std::vector<int64_t> random_tokens(int seq_len, int vocab_size = 151936) {
 deploy_bench::BenchResult run_qwen(OrtSession& ctx,
                                     int seq_len, int num_iterations) {
     deploy_bench::BenchResult result;
-    result.model_path = "onnx_qwen";
+    result.model_path = "onnx_qwen3";
 
     auto tokens = random_tokens(seq_len);
     std::vector<int64_t> shape = {1, static_cast<int64_t>(seq_len)};

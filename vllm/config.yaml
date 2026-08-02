@@ -1,8 +1,8 @@
 # vLLM configuration. All relative paths are resolved from this file.
 model:
-  id: "Qwen2-7B-Instruct"
+  id: "Qwen3-8B-Instruct"
   source: "huggingface"
-  path: "Qwen/Qwen2-7B-Instruct"
+  path: "Qwen/Qwen3-8B-Instruct"
   format: "transformers"
 
 server:

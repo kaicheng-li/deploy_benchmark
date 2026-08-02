@@ -7,10 +7,10 @@ models:
     source: "local"
     path: "../models/rf-detr-seg-medium"
     format: "transformers"
-  qwen2_1_5b:
-    id: "Qwen2-1.5B-Instruct"
+  qwen3_8b_instruct:
+    id: "Qwen3-8B-Instruct"
     source: "huggingface"
-    path: "Qwen/Qwen2-1.5B-Instruct"
+    path: "Qwen/Qwen3-8B-Instruct"
     format: "transformers"
 
 tasks:
@@ -22,12 +22,14 @@ tasks:
     image: "./0000000109.png"
     threshold: 0.5
     device: "CPU"
-  qwen:
-    model: "qwen2_1_5b"
-    onnx_file: "../onnx/onnx_models/qwen.onnx"
+  qwen3:
+    model: "qwen3_8b_instruct"
+    onnx_file: "../onnx/onnx_models/qwen3.onnx"
     ir_dir: "./openvino_models"
-    ir_file: "./openvino_models/qwen.xml"
+    ir_file: "./openvino_models/qwen3.xml"
     prompt: "Hello, introduce yourself briefly."
     max_new_tokens: 64
     seq_len: 32
+    warmup: 3
+    iterations: 20
     device: "CPU"

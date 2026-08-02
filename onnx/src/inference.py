@@ -1,7 +1,7 @@
 """Run this project's ONNX model.
 
 This script intentionally only knows about the two models in config.yaml:
-RF-DETR Seg and Qwen.
+RF-DETR Seg and Qwen3.
 """
 
 from __future__ import annotations
@@ -14,12 +14,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
-import onnxruntime as ort
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_DIR))
 
-from common.config import default_config_path, load_config as load_yaml_config, resolve_task_config
+from common.config import load_config as load_yaml_config, resolve_task_config
 from common.logger import setup_logger
 
 
@@ -38,7 +39,8 @@ def selected_config(
     return resolve_task_config(config, config_path, ("onnx_file", "image"))
 
 
-def create_session(cfg: dict[str, Any]) -> ort.InferenceSession:
+def create_session(cfg: dict[str, Any]):
+    import onnxruntime as ort
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     options.intra_op_num_threads = int(cfg.get("threads", 4))
@@ -100,7 +102,7 @@ def run_vision(cfg: dict[str, Any]) -> None:
         print(f"  id={item['id']} label={label} score={float(item['score']):.4f}")
 
 
-def run_qwen(cfg: dict[str, Any]) -> None:
+def run_qwen3(cfg: dict[str, Any]) -> None:
     from transformers import AutoTokenizer
 
     session = create_session(cfg)
@@ -121,19 +123,63 @@ def run_qwen(cfg: dict[str, Any]) -> None:
     print(tokenizer.decode(input_ids[0], skip_special_tokens=True))
 
 
+def run_qwen3vl(cfg: dict[str, Any]) -> None:
+    """Qwen3-VL 多模态推理：图片 + 文本 -> 文本。
+
+    运行前需要先执行 export_onnx.py --mode qwen3vl 生成 qwen3vl.onnx。
+    ONNX 图是静态 shape，推理时图片必须与导出时使用同一预处理尺寸
+    （默认都是 onnx/0000000109.png，或同一 max_pixels/min_pixels 配置）。
+    """
+    from transformers import AutoProcessor, AutoTokenizer, Qwen3VLConfig
+
+    from qwen3vl_utils import Qwen3VLConstants, generate, prepare_inputs
+
+    session = create_session(cfg)
+    processor = AutoProcessor.from_pretrained(cfg["model_path"], trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(cfg["model_path"], trust_remote_code=True)
+    consts = Qwen3VLConstants.from_config(Qwen3VLConfig.from_pretrained(cfg["model_path"]))
+
+    feeds = prepare_inputs(
+        processor,
+        tokenizer,
+        cfg["image"],
+        cfg.get("prompt", "Describe this image in detail."),
+        int(cfg.get("seq_len", 1024)),
+    )
+    text, input_tokens, output_tokens = generate(
+        session,
+        feeds,
+        tokenizer,
+        consts,
+        max_new_tokens=int(cfg.get("max_new_tokens", 64)),
+    )
+
+    print(f"\n[Image] {cfg['image']}")
+    print(f"[Prompt] {cfg.get('prompt', '')}")
+    print(f"[Output] {text}")
+    print(f"[Tokens] input={input_tokens}, output={output_tokens}")
+
+
 def main() -> None:
     force_utf8_stdio()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=str(default_config_path(__file__)))
+    parser.add_argument("--config", default=str(BACKEND_DIR / "config.yaml"))
+    parser.add_argument(
+        "--mode", choices=("vision", "qwen3", "qwen3vl"), help="Override config.yaml mode"
+    )
     args = parser.parse_args()
     config, config_path = load_yaml_config(args.config)
+    if args.mode:
+        config["mode"] = args.mode
     mode, cfg = selected_config(config, config_path)
     if mode == "vision":
         run_vision(cfg)
-    elif mode == "qwen":
-        run_qwen(cfg)
+    elif mode == "qwen3":
+        run_qwen3(cfg)
+    elif mode == "qwen3vl":
+        run_qwen3vl(cfg)
     else:
-        raise ValueError("config.yaml mode must be 'vision' or 'qwen'")
+        raise ValueError("config.yaml mode must be 'vision', 'qwen3' or 'qwen3vl'")
 
 
 if __name__ == "__main__":

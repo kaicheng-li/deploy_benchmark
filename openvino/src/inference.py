@@ -1,6 +1,6 @@
 """Run this project's OpenVINO model.
 
-Only two modes: vision (RF-DETR Seg) or qwen (Qwen).
+Only two modes: vision (RF-DETR Seg) or qwen3 (Qwen3).
 """
 
 from __future__ import annotations
@@ -14,9 +14,11 @@ from typing import Any
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_DIR))
 
-from common.config import default_config_path, load_config as load_yaml_config, resolve_task_config
+from common.config import load_config as load_yaml_config, resolve_task_config
 from common.logger import setup_logger
 
 logger = setup_logger("openvino_inference")
@@ -80,9 +82,9 @@ def run_vision(cfg: dict[str, Any]) -> None:
         print(f"  id={item['id']} label={label} score={float(item['score']):.4f}")
 
 
-# ── qwen ──────────────────────────────────────────────────────────
+# ── qwen3 ──────────────────────────────────────────────────────────
 
-def run_qwen(cfg: dict[str, Any]) -> None:
+def run_qwen3(cfg: dict[str, Any]) -> None:
     import openvino as ov
     from transformers import AutoTokenizer
 
@@ -110,17 +112,20 @@ def run_qwen(cfg: dict[str, Any]) -> None:
 def main() -> None:
     force_utf8_stdio()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=str(default_config_path(__file__)))
+    parser.add_argument("--config", default=str(BACKEND_DIR / "config.yaml"))
+    parser.add_argument("--mode", choices=("vision", "qwen3"), help="Override config.yaml mode")
     args = parser.parse_args()
     config, config_path = load_yaml_config(args.config)
+    if args.mode:
+        config["mode"] = args.mode
     mode, cfg = resolve_task_config(config, config_path, ("onnx_file", "ir_dir", "ir_file", "image"))
 
     if mode == "vision":
         run_vision(cfg)
-    elif mode == "qwen":
-        run_qwen(cfg)
+    elif mode == "qwen3":
+        run_qwen3(cfg)
     else:
-        raise ValueError("config.yaml mode must be 'vision' or 'qwen'")
+        raise ValueError("config.yaml mode must be 'vision' or 'qwen3'")
 
 
 if __name__ == "__main__":

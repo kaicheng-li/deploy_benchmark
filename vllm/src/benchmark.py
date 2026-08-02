@@ -3,7 +3,7 @@
 使用 vLLM 自带的 benchmark_serving.py 或直接通过 OpenAI API 进行评测。
 
 使用方式:
-    python benchmark.py --host 127.0.0.1 --port 8000 --config config.yaml
+    python src/benchmark.py --host 127.0.0.1 --port 8000 --config config.yaml
 """
 
 import argparse
@@ -18,9 +18,11 @@ from typing import Optional
 import requests
 
 # 添加项目根路径以导入 common 模块
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_DIR))
 
-from common.config import default_config_path, load_config, resolve_path
+from common.config import load_config, resolve_path
 from common.metrics import BenchmarkMetrics, TimingResult
 from common.reporter import BenchmarkReporter
 from common.logger import setup_logger
@@ -114,7 +116,7 @@ def main():
     parser = argparse.ArgumentParser(description="vLLM 基准测试")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="服务地址")
     parser.add_argument("--port", type=int, default=8000, help="服务端口")
-    parser.add_argument("--config", type=str, default=str(default_config_path(__file__)), help="配置文件")
+    parser.add_argument("--config", type=str, default=str(BACKEND_DIR / "config.yaml"), help="配置文件")
     parser.add_argument("--data", type=str, default="../data/prompts.txt", help="测试数据文件")
     parser.add_argument("--concurrency", type=int, default=8, help="并发数")
     parser.add_argument("--output", type=str, default="../results", help="结果输出目录")

@@ -19,7 +19,7 @@ cd "$LLAMA_DIR"
 
 # ── Python binding (the project no longer vendors llama.cpp source)
 log_info "安装 llama.cpp Python 封装..."
-$PYTHON -m pip install --quiet -r python/requirements.txt 2>/dev/null || {
+$PYTHON -m pip install --quiet -r requirements.txt 2>/dev/null || {
     log_warn "llama-cpp-python 安装失败"
     log_warn '请手动安装: pip install "llama-cpp-python>=0.3.34"'
 }
@@ -27,5 +27,5 @@ $PYTHON -m pip install --quiet -r python/requirements.txt 2>/dev/null || {
 log_info "llama.cpp 部署完成 ✓"
 echo ""
 echo "  使用方式:"
-echo "    Python 推理:  cd llamacpp/python && python inference.py --config ../config.yaml"
-echo "    Python 基准:  cd llamacpp/python && python benchmark.py --config ../config.yaml"
+echo "    Python 推理:  (cd llamacpp && python src/inference.py --config config.yaml)"
+echo "    Python 基准:  (cd llamacpp && python src/benchmark.py --config config.yaml)"

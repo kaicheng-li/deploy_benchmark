@@ -7,10 +7,15 @@ models:
     source: "local"
     path: "../models/rf-detr-seg-medium"
     format: "transformers"
-  qwen2_1_5b:
-    id: "Qwen2-1.5B-Instruct"
+  qwen3_8b_instruct:
+    id: "Qwen3-8B-Instruct"
     source: "huggingface"
-    path: "Qwen/Qwen2-1.5B-Instruct"
+    path: "Qwen/Qwen3-8B-Instruct"
+    format: "transformers"
+  qwen3_vl_8b_instruct:
+    id: "Qwen3-VL-8B-Instruct"
+    source: "huggingface"
+    path: "Qwen/Qwen3-VL-8B-Instruct"
     format: "transformers"
 
 tasks:
@@ -22,12 +27,28 @@ tasks:
     opset_version: 18
     provider: "CPUExecutionProvider"
     threads: 4
-  qwen:
-    model: "qwen2_1_5b"
-    onnx_file: "./onnx_models/qwen.onnx"
+  qwen3vl:
+    model: "qwen3_vl_8b_instruct"
+    onnx_file: "./onnx_models/qwen3vl.onnx"
+    image: "./0000000109.png"
+    prompt: "Describe this image in detail."
+    max_new_tokens: 64
+    # 导出使用静态 shape：seq_len 必须大于 图像 token + prompt + 生成长度。
+    # 图像约 400 个视觉 token，1024 可容纳常见图片与 64-128 个生成 token。
+    seq_len: 1024
+    warmup: 3
+    iterations: 10
+    opset_version: 19
+    provider: "CPUExecutionProvider"
+    threads: 4
+  qwen3:
+    model: "qwen3_8b_instruct"
+    onnx_file: "./onnx_models/qwen3.onnx"
     prompt: "Hello, introduce yourself briefly."
     max_new_tokens: 64
     seq_len: 32
+    warmup: 3
+    iterations: 20
     opset_version: 18
     provider: "CPUExecutionProvider"
     threads: 4

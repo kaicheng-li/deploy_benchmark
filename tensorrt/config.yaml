@@ -1,28 +1,72 @@
-# TensorRT-LLM configuration. All relative paths are resolved from this file.
-model:
-  id: "Qwen3-8B-Instruct"
-  source: "huggingface"
-  path: "Qwen/Qwen3-8B-Instruct"
-  format: "transformers"
+mode: vision  # vision | llm
 
-build:
-  dtype: "float16"
-  max_batch_size: 8
-  max_input_len: 2048
-  max_output_len: 512
-  max_beam_width: 1
-  quantization: null
-  use_gpt_attention_plugin: true
-  use_gemm_plugin: false
-  engine_dir: "./trt_engines"
+# Every task references a model here. Local paths are relative to this YAML file.
+models:
+  rf_detr_seg_medium:
+    id: rf-detr-seg-medium
+    source: local
+    path: ../models/rf-detr-seg-medium
+    format: transformers
+  qwen3_8b_instruct:
+    id: Qwen3-8B-Instruct
+    source: huggingface
+    path: Qwen/Qwen3-8B-Instruct
+    format: transformers
+  qwen3_vl_8b_instruct:
+    id: Qwen3-VL-8B-Instruct
+    source: huggingface
+    path: Qwen/Qwen3-VL-8B-Instruct
+    format: transformers
 
-runtime:
-  engine_dir: "./trt_engines"
+tasks:
+  # Generic TensorRT: RF-DETR PyTorch -> ONNX -> TensorRT engine.
+  vision:
+    model: rf_detr_seg_medium
+    onnx_file: ../onnx/onnx_models/vision.onnx
+    engine_file: ./trt_engines/rf_detr_seg.engine
+    image: ../onnx/0000000109.png
+    threshold: 0.5
+    build:
+      precision: fp16
+      workspace_size_mb: 2048
 
-benchmark:
-  warmup_requests: 10
-  num_requests: 100
-  max_concurrency: [1, 4, 8]
-  max_input_len: 1024
-  max_output_len: 512
-  prompt_file: "../data/prompts.txt"
+  # TensorRT-LLM: Qwen Hugging Face checkpoint -> TRT-LLM engine.
+  llm:
+    model: qwen3_8b_instruct
+    build:
+      dtype: float16
+      max_batch_size: 8
+      max_input_len: 2048
+      max_output_len: 512
+      max_beam_width: 1
+      quantization: null
+      use_gpt_attention_plugin: true
+      use_gemm_plugin: false
+      engine_dir: ./trt_engines/qwen3_8b
+    runtime:
+      engine_dir: ./trt_engines/qwen3_8b
+    benchmark:
+      warmup_requests: 10
+      num_requests: 100
+      max_concurrency: [1, 4, 8]
+      max_input_len: 1024
+      max_output_len: 512
+      prompt_file: ../data/prompts.txt
+
+  # Qwen3-VL 多模态：TensorRT-LLM >= 1.2.0 通过 PyTorch backend 原生支持，
+  # 不需要 convert_checkpoint / trtllm-build，直接 trtllm-serve 加载 HF checkpoint。
+  qwen3vl:
+    model: qwen3_vl_8b_instruct
+    serve:
+      host: 0.0.0.0
+      port: 8001
+      tp_size: 1
+    image: ../onnx/0000000109.png
+    prompt: "Describe this image in detail."
+    max_new_tokens: 128
+    benchmark:
+      warmup_requests: 3
+      num_requests: 20
+      max_concurrency: [1, 2, 4]
+      max_output_len: 128
+      prompt_file: ../data/prompts.txt

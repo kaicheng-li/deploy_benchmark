@@ -62,9 +62,9 @@ OpenVINO            │    ⚠️    │    │    ✅    │    │    ✅    �
 
 | 你的硬件条件 | 可以测试的框架 | 推荐测试模型 |
 |-------------|--------------|------------|
-| **有 NVIDIA GPU** (8G+) | 全部 5 个框架 | Qwen2-7B, LLaMA-3-8B |
-| **仅 CPU** (x86) | ONNX Runtime, llama.cpp, OpenVINO | Qwen2-1.5B, TinyLLaMA |
-| **MacBook (Apple Silicon)** | llama.cpp, ONNX Runtime | Qwen2-7B-Q4 (GGUF) |
+| **有 NVIDIA GPU** (8G+) | 已配置的 GPU 后端 | Qwen3-8B, RF-DETR Seg Medium |
+| **仅 CPU** (x86) | ONNX Runtime, llama.cpp, OpenVINO | Qwen3-VL-8B-Q4 (GGUF), RF-DETR |
+| **MacBook (Apple Silicon)** | llama.cpp, ONNX Runtime | Qwen3-VL-8B-Q4 (GGUF) |
 | **Intel Arc GPU** | OpenVINO, ONNX Runtime | 分类/检测模型 + LLM |
 
 ---
@@ -124,17 +124,16 @@ deploy_benchmark/
 ├── scripts/                # 一键部署 & 评测脚本
 │   ├── deploy_all.sh       # 全框架部署
 │   └── deploy_<framework>.sh  # 单框架部署
-├── vllm/                   # vLLM 推理 (纯 Python)
+├── vllm/                   # vLLM 推理
+│   └── src/                # server.py / benchmark.py
 ├── tensorrt/               # TensorRT 推理
-│   ├── src/                # C++ 源码
-│   └── CMakeLists.txt      # C++ 构建
-├── onnx/                   # ONNX Runtime 推理 (Python)
+│   └── src/                # engine_builder.py / inference.py / benchmark.py / vision_*.py / C++
+├── onnx/                   # ONNX Runtime 推理
+│   └── src/                # export_onnx.py / inference.py / benchmark.py / C++
 ├── llamacpp/               # llama.cpp 推理
-│   ├── src/                # C++ 源码
-│   └── python/             # Python 封装
+│   └── src/                # inference.py / benchmark.py / C++
 ├── openvino/               # OpenVINO 推理
-│   ├── src/                # C++ 源码
-│   └── CMakeLists.txt      # C++ 构建
+│   └── src/                # convert_model.py / inference.py / benchmark.py / C++
 ├── common/                 # Python 公共模块（指标、报告、数据加载）
 ├── cpp_common/             # C++ 公共模块
 ├── docker/                 # Docker 镜像
@@ -167,35 +166,41 @@ bash scripts/deploy_openvino.sh
 
 ## 从零到跑通的典型流程
 
-以 **Qwen2-7B-Instruct** 为例：
+当前配置的模型为 Qwen3-8B-Instruct、Qwen3-VL-8B GGUF 与 RF-DETR Seg Medium。每个后端的 Python 脚本统一放在 src/ 下：YAML 提供默认值，命令行参数只覆盖本次调用。
 
 ```bash
-# 1. 准备环境
-python -m venv venv && source venv/bin/activate
-
-# 2. 下载模型
-huggingface-cli download Qwen/Qwen2-7B-Instruct --local-dir models/Qwen2-7B-Instruct
-
-# 3. 部署全部框架
+# 部署
 bash scripts/deploy_all.sh
 
-# 4. 分别转换/构建模型
-cd onnx    && python export_onnx.py --config config.yaml
-cd openvino && python convert_model.py --config config.yaml
-cd tensorrt && python engine_builder.py --config config.yaml
-# llama.cpp: 需要先用 convert-hf-to-gguf.py 转成 GGUF
+# RF-DETR: 导出/构建/推理
+(cd onnx && python src/export_onnx.py --config config.yaml --mode vision)
+(cd tensorrt && python src/engine_builder.py --config config.yaml)
+(cd tensorrt && python src/inference.py --config config.yaml)
 
-# 5. 分别跑基准测试
-cd vllm     && python server.py --model ../models/Qwen2-7B-Instruct &
-               python benchmark.py --config config.yaml
-cd tensorrt && python benchmark.py --config config.yaml
-cd onnx     && python benchmark.py --config config.yaml
-cd llamacpp/python && python benchmark.py --config ../config.yaml
-cd openvino && python benchmark.py --config config.yaml
+# Qwen3: ONNX/OpenVINO 文本链、服务与本地 GGUF 推理
+(cd onnx && python src/export_onnx.py --config config.yaml --mode qwen3)
+(cd onnx && python src/inference.py --config config.yaml --mode qwen3)
+(cd openvino && python src/convert_model.py --config config.yaml --mode qwen3)
+(cd openvino && python src/inference.py --config config.yaml --mode qwen3)
+(cd vllm && python src/server.py --config config.yaml) &
+(cd llamacpp && python src/inference.py --config config.yaml)
+(cd llamacpp && python src/benchmark.py --config config.yaml)
 
-# 6. 汇总对比报告
-# 各框架的 results/ 目录下会生成 Markdown + JSON + CSV 报告
+# Qwen3-VL 多模态: ONNX 整模型导出 / 推理 / 基准（先下载 Qwen/Qwen3-VL-8B-Instruct）
+(cd onnx && python src/export_onnx.py --config config.yaml --mode qwen3vl)
+(cd onnx && python src/inference.py --config config.yaml --mode qwen3vl)
+(cd onnx && python src/benchmark.py --config config.yaml --mode qwen3vl)
+
+# Qwen3-VL 多模态: TensorRT-LLM（>= 1.2.0, PyTorch backend, 无需 engine 构建, 需 NVIDIA GPU）
+(cd tensorrt && python src/serve.py --config config.yaml --mode qwen3vl) &  # OpenAI API :8001
+(cd tensorrt && python src/inference.py --config config.yaml --mode qwen3vl)
+(cd tensorrt && python src/benchmark.py --config config.yaml --mode qwen3vl)
 ```
+
+> ONNX 的 Qwen3-VL 导出使用静态 shape（固定 `seq_len` 与固定图像尺寸），
+> 推理/基准时图片需要与导出时保持同一预处理尺寸；默认都用 `onnx/0000000109.png`。
+> mRoPE position ids 在运行期由 `onnx/src/qwen3vl_utils.py` 计算，作为 ONNX 图的
+> 显式输入（该计算含逐 token 的 Python 控制流，无法被图追踪）。
 
 ---
 
@@ -210,6 +215,20 @@ cd openvino && python benchmark.py --config config.yaml
 | **OpenVINO** | Python | **C++ 原生** | 边缘设备上 C++ 是首选，延迟和资源都更优 |
 
 > **结论**：本项目 Python 脚本覆盖所有框架（快速验证），C++ 实现聚焦 TensorRT、llama.cpp、OpenVINO（生产级延迟测试），ONNX Runtime 保留双语言能力。
+
+## 已验证的 C++ 入口
+
+```bash
+# OpenVINO: RF-DETR 图片推理与延迟测试
+cmake -S openvino -B openvino/build -DCMAKE_PREFIX_PATH="$CONDA_PREFIX/lib/python3.12/site-packages/openvino"
+cmake --build openvino/build -j
+openvino/build/ov_benchmark --model openvino/openvino_models/vision.xml --mode vision --image openvino/0000000109.png --target-size 432 --iterations 100
+
+# llama.cpp: GGUF 文本基准（既有 C++ 入口）
+cmake -S llamacpp -B llamacpp/build -DGGML_CUDA=ON
+cmake --build llamacpp/build -j
+llamacpp/build/llama_benchmark --model models/Qwen3-VL-8B-Instruct-GGUF/Qwen3VL-8B-Instruct-Q4_K_M.gguf --prompt "Hello" --iterations 20
+```
 
 ---
 
@@ -231,8 +250,8 @@ cd openvino && python benchmark.py --config config.yaml
 
 ```bash
 # 第1步：选一个中小模型，在 GPU 上按框架逐个跑通
-MODEL="Qwen/Qwen2-1.5B-Instruct"   # 1.5B 适合 8GB 显存
-# MODEL="Qwen/Qwen2-7B-Instruct"   # 7B 需要 16GB+
+MODEL="Qwen/Qwen3-8B-Instruct"   # 当前配置的文本模型
+# 本地多模态模型使用 models/Qwen3-VL-8B-Instruct-GGUF/ 下的 GGUF 与 mmproj
 
 # 第2步：跑 LLM 对比（vLLM / TensorRT-LLM / ONNX / llama.cpp / OpenVINO）
 # 第3步：跑 CV 对比（ONNX / OpenVINO / TensorRT）用 ResNet50 或 ViT
@@ -247,4 +266,4 @@ MODEL="Qwen/Qwen2-1.5B-Instruct"   # 1.5B 适合 8GB 显存
 | 中（几块/小时） | A10/L40S 24-48GB | 7B-13B，加 CV 模型 |
 | 高（十几块/小时） | A100 40-80GB | 70B 模型，多并发压测 |
 
-> **简历贴士**：简历上注明测试环境（GPU 型号 + 显存 + CUDA 版本），让数据有上下文。比如 "在 A100-40G 上，Qwen2-7B 的 vLLM(TTFT=12ms, 吞吐=3200tok/s) vs TensorRT-LLM(TTFT=8ms, 吞吐=4100tok/s)"。```
+> **简历贴士**：简历上注明测试环境（GPU 型号、显存与 CUDA 版本），让数据有上下文。比如“在 A100-40G 上，对 Qwen3-8B-Instruct 比较 vLLM 与 TensorRT-LLM 的 TTFT 和吞吐”。

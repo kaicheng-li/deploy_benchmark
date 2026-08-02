@@ -26,5 +26,5 @@ $PYTHON -m pip install --quiet -r requirements.txt 2>/dev/null || {
 log_info "vLLM 部署完成 ✓"
 echo ""
 echo "  使用方式:"
-echo "    启动服务:  cd vllm && python server.py --config config.yaml"
-echo "    基准测试:  cd vllm && python benchmark.py --config config.yaml"
+echo "    启动服务:  cd vllm && python src/server.py --config config.yaml"
+echo "    基准测试:  cd vllm && python src/benchmark.py --config config.yaml"

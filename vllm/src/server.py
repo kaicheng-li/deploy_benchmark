@@ -1,17 +1,19 @@
 """vLLM OpenAI-compatible 推理服务启动脚本。
 
 使用方式:
-    python server.py --config config.yaml
-    python server.py --model Qwen/Qwen2-7B-Instruct --port 8000
+    python src/server.py --config config.yaml
+    python src/server.py --model Qwen/Qwen3-8B-Instruct --port 8000
 """
 
 import argparse
 import subprocess
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_DIR))
 
-from common.config import default_config_path, load_config, resolve_model_path
+from common.config import load_config, resolve_model_path
 
 
 
@@ -40,7 +42,7 @@ def build_command(config: dict, model_override: str | None, port_override: int |
 
 def main():
     parser = argparse.ArgumentParser(description="启动 vLLM OpenAI 推理服务")
-    parser.add_argument("--config", type=str, default=str(default_config_path(__file__)), help="配置文件路径")
+    parser.add_argument("--config", type=str, default=str(BACKEND_DIR / "config.yaml"), help="配置文件路径")
     parser.add_argument("--model", type=str, default=None, help="模型名称或路径 (覆盖配置文件)")
     parser.add_argument("--port", type=int, default=None, help="服务端口 (覆盖配置文件)")
     args = parser.parse_args()

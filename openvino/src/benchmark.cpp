@@ -1,9 +1,9 @@
 /**
- * OpenVINO C++ benchmark — vision (RF-DETR) or qwen.
+ * OpenVINO C++ benchmark — vision (RF-DETR) or qwen3.
  *
  * Usage:
  *   ./ov_benchmark --model ./vision.xml --mode vision --image test.jpg
- *   ./ov_benchmark --model ./qwen.xml --mode qwen
+ *   ./ov_benchmark --model ./qwen3.xml --mode qwen3
  */
 
 #include <iostream>
@@ -36,10 +36,10 @@ struct Config {
 void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " [OPTIONS]\n"
               << "  --model <path>    OpenVINO .xml model (required)\n"
-              << "  --mode <name>     vision | qwen\n"
+              << "  --mode <name>     vision | qwen3\n"
               << "  --device <name>   CPU | GPU | AUTO\n"
               << "  --image <path>    Image for vision mode\n"
-              << "  --seq-len <n>     Qwen input seq length\n"
+              << "  --seq-len <n>     Qwen3 input seq length\n"
               << "  --target-size <n> Vision input size\n"
               << "  --iterations <n>  Benchmark iterations\n"
               << std::endl;
@@ -75,7 +75,7 @@ int main(int argc, char* argv[]) {
     if (cfg.mode == "vision") {
         result = ov_bench::run_vision(cfg.model_path, cfg.device,
                                        cfg.image_path, cfg.target_size, cfg.iterations);
-    } else if (cfg.mode == "qwen") {
+    } else if (cfg.mode == "qwen3" || cfg.mode == "qwen") {
         result = ov_bench::run_qwen(cfg.model_path, cfg.device,
                                      cfg.seq_len, cfg.iterations);
     } else {
