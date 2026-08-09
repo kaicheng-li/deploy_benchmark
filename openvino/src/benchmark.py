@@ -20,6 +20,8 @@ sys.path.insert(0, str(PROJECT_DIR / "onnx" / "src"))
 
 from common.config import load_config as load_yaml_config, resolve_task_config
 from common.logger import setup_logger
+from common.metrics import BenchmarkMetrics, TimingResult
+from common.reporter import BenchmarkReporter
 
 logger = setup_logger("openvino_benchmark")
 
@@ -139,11 +141,15 @@ class _OVSession:
 # ── qwen3vl benchmark ─────────────────────────────────────────────
 
 def bench_qwen3vl(cfg: dict[str, Any]) -> None:
-    """Qwen3-VL 多模态基准：视觉塔 IR + 解码器 IR，统计整请求延迟。"""
+    """Qwen3-VL 多模态基准：视觉塔 IR + 解码器 IR，统计 TTFT/TPOT/E2E 与吞吐。
+
+    指标口径与 ONNX 链路及其他文本后端一致，结果统一走
+    common.metrics / BenchmarkReporter（md/json/csv）。
+    """
     import openvino as ov
     from transformers import AutoProcessor, AutoTokenizer, Qwen3VLConfig
 
-    from qwen3vl_utils import Qwen3VLConstants, generate, prepare_inputs
+    from qwen3vl_utils import Qwen3VLConstants, generate_timed, prepare_inputs
 
     core = ov.Core()
     device = cfg.get("device", "CPU")
@@ -164,41 +170,49 @@ def bench_qwen3vl(cfg: dict[str, Any]) -> None:
     max_tokens = int(cfg.get("max_new_tokens", 64))
     warmup = int(cfg.get("warmup", 3))
     iters = int(cfg.get("iterations", 10))
+    output_dir = cfg.get("output_dir", "../results")
+    device = str(cfg.get("device", "CPU")).lower()
+    reporter = BenchmarkReporter(output_dir=output_dir)
 
     logger.info(f"Warmup {warmup} rounds...")
     for _ in range(warmup):
-        generate(
-            _OVSession(vision_compiled),
-            _OVSession(decoder_compiled),
-            feeds,
-            tokenizer,
-            consts,
-            max_tokens,
+        iter_feeds = {key: value.copy() for key, value in feeds.items()}
+        generate_timed(
+            _OVSession(vision_compiled), _OVSession(decoder_compiled),
+            iter_feeds, tokenizer, consts, max_tokens,
         )
 
     logger.info(f"Benchmark {iters} iterations...")
-    latencies = []
-    total_output_tokens = 0
+    timings: list[TimingResult] = []
     for _ in range(iters):
-        t0 = time.perf_counter()
-        _, _, output_tokens = generate(
-            _OVSession(vision_compiled),
-            _OVSession(decoder_compiled),
-            feeds,
-            tokenizer,
-            consts,
-            max_tokens,
+        iter_feeds = {key: value.copy() for key, value in feeds.items()}
+        _, input_tokens, output_tokens, ttft_ms, tpot_ms, e2e_ms = generate_timed(
+            _OVSession(vision_compiled), _OVSession(decoder_compiled),
+            iter_feeds, tokenizer, consts, max_tokens,
         )
-        latencies.append((time.perf_counter() - t0) * 1000)
-        total_output_tokens += output_tokens
+        timings.append(
+            TimingResult(
+                ttft=ttft_ms,
+                tpot=tpot_ms,
+                e2e_latency=e2e_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        )
 
-    latencies.sort()
-    n = len(latencies)
-    print(f"\nQwen3-VL benchmark ({iters} iters, {warmup} warmup, max_tokens={max_tokens})")
-    print(f"  avg={np.mean(latencies):.2f}ms  p50={latencies[n // 2]:.2f}ms  "
-          f"p95={latencies[int(n * 0.95)]:.2f}ms  p99={latencies[int(n * 0.99)]:.2f}ms")
-    print(f"  throughput={iters / (sum(latencies) / 1000):.2f} req/s")
-    print(f"  tokens/s={total_output_tokens / (sum(latencies) / 1000):.2f}")
+    if timings:
+        metrics = BenchmarkMetrics.from_timings(
+            timings,
+            framework="OpenVINO",
+            model_name=cfg.get("model_id", "Qwen3-VL-8B-Instruct"),
+            device=device,
+            task_type="text-generation",
+        )
+        reporter.add_result(metrics)
+        reporter.print_comparison()
+
+    saved = reporter.save_all(prefix="openvino_qwen3vl_benchmark")
+    logger.info(f"报告已保存: {saved}")
 
 
 # ── entry ─────────────────────────────────────────────────────────
@@ -210,6 +224,14 @@ def main() -> None:
     parser.add_argument(
         "--mode", choices=("vision", "qwen3", "qwen3vl"), help="Override config.yaml mode"
     )
+    parser.add_argument(
+        "--device",
+        choices=("CPU", "GPU", "AUTO"),
+        help="Override device (OpenVINO GPU 仅支持 Intel 显卡)",
+    )
+    parser.add_argument("--warmup", type=int, help="Override warmup rounds")
+    parser.add_argument("--iterations", type=int, help="Override benchmark iterations")
+    parser.add_argument("--max-tokens", type=int, help="Override max_new_tokens")
     args = parser.parse_args()
     config, config_path = load_yaml_config(args.config)
     if args.mode:
@@ -219,6 +241,14 @@ def main() -> None:
         config_path,
         ("onnx_file", "vision_onnx_file", "ir_dir", "ir_file", "vision_ir_file", "image"),
     )
+    if args.device:
+        cfg["device"] = args.device
+    if args.warmup is not None:
+        cfg["warmup"] = args.warmup
+    if args.iterations is not None:
+        cfg["iterations"] = args.iterations
+    if args.max_tokens is not None:
+        cfg["max_new_tokens"] = args.max_tokens
 
     if mode == "vision":
         bench_vision(cfg)

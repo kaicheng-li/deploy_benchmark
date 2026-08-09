@@ -47,9 +47,10 @@ tasks:
     ir_file: "./openvino_models/qwen3vl_decoder.xml"
     vision_ir_file: "./openvino_models/qwen3vl_vision.xml"
     image: "./0000000109.png"
-    prompt: "Describe this image in detail."
+    prompt: "这个图片包含了什么"
     max_new_tokens: 64
     seq_len: 1024
     warmup: 3
     iterations: 10
+    output_dir: "../results"
     device: "CPU"

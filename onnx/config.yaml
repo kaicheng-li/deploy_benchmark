@@ -32,13 +32,14 @@ tasks:
     onnx_file: "./onnx_models/qwen3vl_decoder.onnx"
     vision_onnx_file: "./onnx_models/qwen3vl_vision.onnx"
     image: "./0000000109.png"
-    prompt: "Describe this image in detail."
+    prompt: "这个图片包含了什么"
     max_new_tokens: 64
     # 导出使用静态 shape：seq_len 必须大于 图像 token + prompt + 生成长度。
     # 图像约 400 个视觉 token，1024 可容纳常见图片与 64-128 个生成 token。
     seq_len: 1024
     warmup: 3
     iterations: 10
+    output_dir: "../results"
     # fp16 导出体积约 16GB（fp32 约 32GB，磁盘放不下）；有 GPU 时用 cuda 加速导出
     dtype: float16
     device: cuda

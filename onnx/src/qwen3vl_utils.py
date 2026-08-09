@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -515,3 +516,73 @@ def generate(
     generated = input_ids[0, start_len:end_len]
     text = tokenizer.decode(generated, skip_special_tokens=True)
     return text, start_len, end_len - start_len
+
+
+def generate_timed(
+    vision_session: Any,
+    decoder_session: Any,
+    feeds: dict[str, np.ndarray],
+    tokenizer: Any,
+    consts: Qwen3VLConstants,
+    max_new_tokens: int = 64,
+) -> tuple[str, int, int, float, float, float]:
+    """带阶段计时的贪心解码（用于基准，与 generate 保持相同解码行为）。
+
+    Returns:
+        (text, input_tokens, output_tokens, ttft_ms, tpot_ms, e2e_ms)
+        - ttft_ms: 请求开始到首个生成 token 的耗时（含视觉塔前向）
+        - tpot_ms: 逐 token 解码的平均耗时（不含视觉塔）
+        - e2e_ms:  完整请求耗时
+
+    注意：会就地修改 ``feeds`` 里的 input_ids / attention_mask，
+    调用方如需重复使用请先拷贝。
+    """
+    t_start = time.perf_counter()
+    image_embeds, deepstack_embeds = run_vision(vision_session, feeds["pixel_values"])
+    vision_ms = (time.perf_counter() - t_start) * 1000
+
+    input_ids = feeds["input_ids"]
+    attention_mask = feeds["attention_mask"]
+    seq_len = input_ids.shape[1]
+    start_len = int(attention_mask.sum())
+    eos_token_id = tokenizer.eos_token_id
+
+    token_times: list[float] = []
+    for step in range(max_new_tokens):
+        if start_len + step >= seq_len:
+            logging.getLogger("qwen3vl_utils").warning(
+                "到达最大序列长度 %s，提前停止", seq_len
+            )
+            break
+        position_ids, _ = compute_rope_index(
+            input_ids, attention_mask, feeds["image_grid_thw"], consts
+        )
+        mask_4d = build_causal_mask(attention_mask)
+        t0 = time.perf_counter()
+        logits = decoder_session.run(
+            ["logits"],
+            {
+                "input_ids": input_ids,
+                "attention_mask": mask_4d,
+                "position_ids": position_ids,
+                "image_embeds": image_embeds,
+                "deepstack_embeds": deepstack_embeds,
+            },
+        )[0]
+        token_times.append((time.perf_counter() - t0) * 1000)
+
+        next_id = int(np.argmax(logits[0, start_len + step]))
+        if eos_token_id is not None and next_id == eos_token_id:
+            break
+        input_ids[0, start_len + step] = next_id
+        attention_mask[0, start_len + step] = 1
+
+    end_len = int(attention_mask.sum())
+    generated = input_ids[0, start_len:end_len]
+    text = tokenizer.decode(generated, skip_special_tokens=True)
+
+    e2e_ms = (time.perf_counter() - t_start) * 1000
+    first_token_ms = token_times[0] if token_times else 0.0
+    ttft_ms = vision_ms + first_token_ms
+    tpot_ms = float(np.mean(token_times)) if token_times else 0.0
+    return text, start_len, end_len - start_len, ttft_ms, tpot_ms, e2e_ms
