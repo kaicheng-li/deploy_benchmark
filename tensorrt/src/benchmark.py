@@ -225,9 +225,10 @@ def main() -> None:
                 "请用中文描述这张图片的内容。",
             ] * 20
         else:
-            prompts = DataLoader(data_path).load_prompts(
-                max_samples=int(bench_cfg.get("num_requests", 20))
-            )
+            requested = int(bench_cfg.get("num_requests", 20))
+            prompts = DataLoader(data_path).load_prompts(max_samples=requested)
+            if prompts and len(prompts) < requested:
+                prompts = (prompts * ((requested + len(prompts) - 1) // len(prompts)))[:requested]
 
         max_tokens = int(bench_cfg.get("max_output_len", 128))
         concurrency_levels = bench_cfg.get("max_concurrency", [args.concurrency or 1])

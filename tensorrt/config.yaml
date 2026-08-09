@@ -1,4 +1,4 @@
-mode: vision  # vision | llm
+mode: qwen3vl  # vision | llm | qwen3vl
 
 # Every task references a model here. Local paths are relative to this YAML file.
 models:
@@ -62,7 +62,7 @@ tasks:
       port: 8001
       tp_size: 1
     image: ../onnx/0000000109.png
-    prompt: "Describe this image in detail."
+    prompt: "请用中文描述这张图片中的主要内容。"
     max_new_tokens: 128
     benchmark:
       warmup_requests: 3

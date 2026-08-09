@@ -1,0 +1,24 @@
+name: qwen3vl-tensorrt-llm
+channels:
+  - nvidia
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # PyTorch CUDA wheel used by the validated RTX 5090 environment.
+      - torch==2.9.1
+      - torchvision>=0.24.0
+      - --extra-index-url=https://pypi.nvidia.com
+      - tensorrt==10.14.1.48
+      - tensorrt_llm==1.2.1
+      - transformers==4.57.3
+      - numpy==1.26.4
+      - scipy==1.13.1
+      - pyyaml==6.0.2
+      - requests==2.34.2
+      - pillow>=10.0.0
+      - pycuda>=2024.1
+      - onnx>=1.16.0

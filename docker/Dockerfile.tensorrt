@@ -9,11 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN pip3 install --no-cache-dir \
-    tensorrt_llm --extra-index-url https://pypi.nvidia.com \
-    torch transformers
-
 COPY tensorrt/ /app/tensorrt/
 COPY common/ /app/common/
+
+RUN pip3 install --no-cache-dir \
+    --extra-index-url https://pypi.nvidia.com \
+    -r /app/tensorrt/requirements.txt
 
 ENTRYPOINT ["python3", "tensorrt/inference.py"]

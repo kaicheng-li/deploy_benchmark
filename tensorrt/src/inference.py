@@ -85,6 +85,8 @@ def main() -> None:
                         help="Override config.yaml mode")
     parser.add_argument("--prompt")
     parser.add_argument("--image", help="Override tasks.vision.image")
+    parser.add_argument("--host", help="Override qwen3vl serve host")
+    parser.add_argument("--port", type=int, help="Override qwen3vl serve port")
     parser.add_argument("--max-tokens", type=int, default=512)
     args = parser.parse_args()
 
@@ -104,6 +106,12 @@ def main() -> None:
         run_vision(cfg, args.image)
         return
     if mode == "qwen3vl":
+        if args.host or args.port:
+            cfg["serve"] = dict(cfg.get("serve", {}))
+            if args.host:
+                cfg["serve"]["host"] = args.host
+            if args.port:
+                cfg["serve"]["port"] = args.port
         prompt = args.prompt or cfg.get("prompt", "Describe this image in detail.")
         image = args.image or cfg["image"]
         print(run_qwen3vl_inference(cfg, prompt, image, args.max_tokens))
