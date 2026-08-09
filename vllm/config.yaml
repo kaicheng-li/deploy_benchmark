@@ -19,9 +19,10 @@ server:
 benchmark:
   task_type: "multimodal-image-description"
   image: "../onnx/0000000109.png"
-  prompt: "图片描述了什么？"
-  warmup_requests: 3
-  num_requests: 20
+  prompt: "请用中文描述这张图片中的主要内容。"
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 32
+  warmup_requests: 10
+  num_requests: 100
   max_concurrency: [1, 2, 4]
-  max_output_len: 128
-
