@@ -16,11 +16,44 @@
 - 服务接口：OpenAI-compatible `/v1/chat/completions`
 - 实测请求：HTTP 200，能够返回正确的中文图片描述
 
-## 2. 为什么 Qwen3-VL 不转换成传统 `.engine`
+## 2. 主流部署路线对比
+
+“模型是否要转换”不能脱离目标运行时来回答。转换的本质是把训练框架中的模型表示，变成目标运行时能够高效执行的表示；有的运行时在部署前转换，有的在第一次启动时编译，有的直接在运行期加载并调度算子。
+
+| 路线 | 常见输入 | 是否有离线转换 | 典型产物 | 适合场景 |
+|---|---|---:|---|---|
+| PyTorch/Hugging Face 直接推理 | HF checkpoint | 否 | 权重目录 | 功能验证、灵活输入、开发调试 |
+| vLLM 直接加载 HF | HF checkpoint | 通常否 | 权重目录 + runtime cache | LLM 服务、动态 batch、快速上线 |
+| TensorRT-LLM PyTorch backend | HF checkpoint | 当前路径通常否 | 权重目录 + runtime cache | Qwen3-VL 等动态多模态服务 |
+| TensorRT-LLM Engine backend | HF checkpoint | 是 | TRT-LLM checkpoint + `.engine` | 输入边界固定、追求离线构建和稳定产物 |
+| 原生 TensorRT / ONNX Runtime TensorRT EP | ONNX 或网络定义 | 通常是 ONNX；engine 可首次运行缓存 | `.engine` 或 TensorRT EP cache | CV 模型、固定 shape、NVIDIA GPU |
+| OpenVINO | HF/PyTorch/ONNX | 通常是 IR 转换 | `.xml` + `.bin` | Intel CPU/GPU/NPU 和边缘部署 |
+| Torch-TensorRT | PyTorch module | 编译或 JIT 编译 | engine/module/cache | PyTorch 模型的 TensorRT 编译优化 |
+
+几个容易混淆的点：
+
+1. **ONNX Runtime 不等于 TensorRT**。ONNX Runtime 的 CUDA EP 可以直接执行 ONNX，不生成 TensorRT engine；启用 TensorRT EP 时，首次建 Session 可能按 profile 构建并缓存 engine，后续从 cache 加载。官方文档明确区分了 TensorRT engine cache 和普通 ONNX 执行路径（[ONNX Runtime TensorRT EP](https://onnxruntime.ai/docs/execution-providers/TensorRT-ExecutionProvider.html)）。
+2. **OpenVINO 一般需要先转 IR**。`openvino.convert_model` 或 `ovc` 将模型保存为 `.xml` 拓扑和 `.bin` 权重，运行时再读取 IR（[OpenVINO 转换文档](https://docs.openvino.ai/2026/openvino-workflow/model-preparation/conversion-parameters.html)）。
+3. **TensorRT 原生 API 的核心产物就是序列化 engine**。网络定义/ONNX 经过 builder 优化后生成 serialized engine（[TensorRT Python API](https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/python-api-docs.html)）。
+4. **TensorRT-LLM 的后端正在统一到 PyTorch backend**。官方迁移说明指出，较新的 TensorRT-LLM 以 PyTorch backend 为主要执行后端，HF checkpoint 可以直接加载，不必执行 engine-build 步骤（[TensorRT-LLM backend migration](https://nvidia.github.io/TensorRT-LLM/latest/legacy/tensorrt-backend-removal.html)）。本报告的实测版本是 TensorRT-LLM 1.2.1。
+
+## 3. 本项目为什么选择 TensorRT-LLM PyTorch backend
+
+选择标准不是“哪个流程步骤少”，而是模型结构、输入动态性和目标交付物是否匹配。
+
+- **模型是 Qwen3-VL 多模态模型**：视觉塔、图像 token、文本 token、mRoPE、KV Cache 和自回归解码需要在同一请求中协同工作。
+- **输入是动态的**：图片分辨率、图片数量、视觉 token 数、文本长度和输出长度都可能变化；为所有组合预先构建 engine 会带来大量 shape profile 和转换验证成本。
+- **本地已有 HF 权重**：PyTorch backend 可以直接复用 config、tokenizer、processor 和 safetensors 分片，不需要另建中间 checkpoint。
+- **当前版本的可用性更高**：本机 TensorRT-LLM 1.2.1 已成功加载 Qwen3-VL 并完成 HTTP 200 图片问答；这条路径避免了把纯文本 LLM 的 converter 直接套到视觉语言模型上。
+- **运行期仍然有 TensorRT-LLM 优化**：服务启动时会进行权重加载、算子 autotune、CUDA Graph warmup、paged KV Cache 分配和批处理调度；“没有 `.engine` 文件”不代表“没有 GPU 优化”。
+
+代价也要在面试中主动说明：PyTorch backend 的启动和 warmup 时间较长，显存占用较高，部署结果更依赖 PyTorch、CUDA、TensorRT-LLM 和 GPU 版本；如果项目交付物硬性要求独立 `.engine`，则应先确认目标 TensorRT-LLM 版本是否为 Qwen3-VL 提供完整 engine conversion 支持，再选择 Engine backend。
+
+## 4. 为什么 Qwen3-VL 不转换成传统 `.engine`
 
 这里需要区分两种 TensorRT-LLM 运行方式。
 
-### 2.1 传统 Engine backend
+### 4.1 传统 Engine backend
 
 传统流程通常是：
 
@@ -35,7 +68,7 @@ TensorRT-LLM checkpoint
 
 这种方式适合结构固定、输入输出边界明确的模型，例如纯文本 decoder-only LLM 或普通视觉网络。模型结构、输入 shape、KV Cache 和插件在构建阶段固化，启动时只需要反序列化 engine。
 
-### 2.2 Qwen3-VL 的 PyTorch backend
+### 4.2 Qwen3-VL 的 PyTorch backend
 
 Qwen3-VL 是一个视觉语言模型，不是单一的文本网络。一次请求包含：
 
@@ -62,7 +95,7 @@ Qwen3-VL 是一个视觉语言模型，不是单一的文本网络。一次请�
 
 这不是“模型不能部署”或“因为配置没有写转换命令”，而是当前多模态后端的执行形态不同：Qwen3-VL 的视觉编码和语言生成需要在请求运行期协同处理，直接加载 HF 结构可以保留这套动态逻辑。
 
-### 2.3 为什么 RF-DETR 又可以转 Engine
+### 4.3 为什么 RF-DETR 又可以转 Engine
 
 RF-DETR-Seg 是固定输入图片到检测/分割输出的视觉模型：
 
@@ -78,7 +111,7 @@ PyTorch -> ONNX -> TensorRT .engine
 
 两者差异来自模型结构和运行时能力，不是因为一个模型在本地、另一个模型不在本地。
 
-### 2.4 面试时的标准解释
+### 4.4 面试时的标准解释
 
 可以这样回答：
 
@@ -88,7 +121,7 @@ PyTorch -> ONNX -> TensorRT .engine
 
 > `.engine` 是 TensorRT 传统构建链路的序列化产物，不是使用 TensorRT-LLM 的唯一证明。是否生成 engine 取决于目标模型是否有稳定的 engine converter，以及模型输入和控制流能否在构建阶段固定。对当前 Qwen3-VL 版本，PyTorch backend 是更直接、可复现的多模态部署路径；如果交付要求必须有 engine，则需要另行确认对应版本的 Qwen3-VL engine conversion 支持，不能直接套用 Qwen3-8B 纯文本的转换命令。
 
-## 3. 环境与配置文件
+## 5. 环境与配置文件
 
 本项目已补齐两类复现文件：
 
@@ -117,13 +150,13 @@ PY
 
 `tensorrt/config.yaml` 已将默认模式设为 `qwen3vl`，模型来源设为本地路径，默认 prompt 与压测文件的第一个 prompt 一致。这样从项目目录启动时不需要修改路径，也不会因为默认模式仍是 `vision` 而误启动 RF-DETR。
 
-## 4. 本次部署流程
+## 6. 本次部署流程
 
-### 4.1 本地模型检查
+### 6.1 本地模型检查
 
 模型目录包含 4 个 safetensors 分片以及 `config.json`、`tokenizer.json`、`preprocessor_config.json` 和 `chat_template.json`，满足离线加载要求，不需要从 Hugging Face 下载。
 
-### 4.2 启动服务
+### 6.2 启动服务
 
 ```bash
 cd deploy_benchmark/tensorrt
@@ -149,7 +182,7 @@ python src/serve.py \
 - RTX 5090 总显存约 32GB；
 - 实测稳态显存约 30,799MiB。
 
-### 4.3 单次多模态推理
+### 6.3 单次多模态推理
 
 ```bash
 python src/inference.py \
@@ -176,7 +209,7 @@ python src/inference.py \
 }
 ```
 
-## 5. 实测指标
+## 7. 实测指标
 
 测试条件：同一张图片、同一个中文 prompt、`temperature=0`、`max_tokens=32`，每个并发级别测量 3 个请求；请求为非流式 HTTP 请求。
 
@@ -203,7 +236,7 @@ python src/inference.py \
 
 完整原始结果：`results/tensorrt_qwen3vl_deployment_report.json`。
 
-## 6. 部署方式选择建议
+## 8. 部署方式选择建议
 
 ### 选择当前 PyTorch backend
 
@@ -225,13 +258,13 @@ python src/inference.py \
 
 对于当前 Qwen3-VL + TensorRT-LLM 1.2.1 组合，直接使用 PyTorch backend 是可运行的多模态部署方案；强行套用纯文本 LLM 的 `convert_checkpoint -> trtllm-build` 流程并不能保证视觉编码、图像 token 融合和生成逻辑正确。
 
-## 7. 风险与后续工作
+## 9. 风险与后续工作
 
 1. 当前基准是非流式请求，需增加流式 token 时间戳才能得到真实 TTFT 和 TPOT。
 2. 32GB 显存下稳态占用约 30.8GB，并发继续提高可能触发显存不足。
 3. 当前测量每个并发只有 3 个请求，适合部署验证，不足以作为正式容量规划结论。
 4. 如果交付要求明确规定必须有 `.engine` 文件，应先确认目标 TensorRT-LLM 版本是否提供 Qwen3-VL 的完整 engine conversion 支持，再单独设计固定 shape 和多模态输入转换链路。
 
-## 8. 最终结论
+## 10. 最终结论
 
 本次已经完成 Qwen3-VL 的 TensorRT-LLM 多模态部署：本地 HF 权重成功加载，服务成功启动，图片问答返回 HTTP 200。当前实现不生成传统 `.engine`，原因是采用了适配 Qwen3-VL 动态视觉语言结构的 PyTorch backend；RF-DETR 则是固定图结构视觉网络，适合 ONNX 到 TensorRT engine 的传统转换流程。
