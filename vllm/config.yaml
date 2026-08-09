@@ -1,8 +1,8 @@
 # vLLM configuration. All relative paths are resolved from this file.
 model:
-  id: "Qwen3-8B-Instruct"
-  source: "huggingface"
-  path: "Qwen/Qwen3-8B-Instruct"
+  id: "Qwen3-VL-8B-Instruct"
+  source: "local"
+  path: "../models/Qwen3-VL-8B-Instruct"
   format: "transformers"
 
 server:
@@ -17,9 +17,11 @@ server:
   max_num_seqs: 256
 
 benchmark:
-  warmup_requests: 10
-  num_requests: 100
-  max_concurrency: [1, 4, 8, 16, 32]
-  prompt_file: "../data/prompts.txt"
-  max_input_len: 1024
-  max_output_len: 512
+  task_type: "multimodal-image-description"
+  image: "../onnx/0000000109.png"
+  prompt: "图片描述了什么？"
+  warmup_requests: 3
+  num_requests: 20
+  max_concurrency: [1, 2, 4]
+  max_output_len: 128
+
