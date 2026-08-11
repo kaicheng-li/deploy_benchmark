@@ -15,7 +15,9 @@ option(GGML_METAL "Enable Metal (macOS only)" OFF)
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/CMakeLists.txt)
     set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "")
     set(LLAMA_BUILD_TESTS OFF CACHE BOOL "")
-    set(LLAMA_BUILD_SERVER OFF CACHE BOOL "")
+    set(LLAMA_BUILD_COMMON ON CACHE BOOL "")
+    set(LLAMA_BUILD_TOOLS ON CACHE BOOL "")
+    set(LLAMA_BUILD_SERVER ON CACHE BOOL "")
 
     if(GGML_CUDA)
         set(GGML_CUDA ON CACHE BOOL "")
@@ -24,28 +26,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/CMakeLists.txt)
     add_subdirectory(llama.cpp)
 endif()
 
-# ── 主程序 ────────────────────────────────────────────────────
-include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}/../cpp_common/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml/include
+# ── 本项目工具 ───────────────────────────────────────────────
+# This target is the native C++ client for an externally running llama-server.
+add_executable(llama_api_benchmark
+    src/api_benchmark.cpp
 )
 
-add_library(bench_utils STATIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/../cpp_common/src/benchmark_utils.cpp
-)
-
-add_executable(llama_benchmark
-    src/inference.cpp
-    src/benchmark.cpp
-)
-
-target_link_libraries(llama_benchmark PRIVATE
-    bench_utils
-    llama
-    ggml
-)
-
-if(WIN32)
-    target_link_libraries(llama_benchmark PRIVATE psapi)
-endif()
+find_package(Threads REQUIRED)
+target_link_libraries(llama_api_benchmark PRIVATE Threads::Threads)
