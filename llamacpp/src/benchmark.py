@@ -159,6 +159,15 @@ def run_multimodal_benchmark(
 
 
 def main():
+    # The standardized OpenAI API benchmark shares this entry point. Keeping
+    # the dispatch here avoids separate public scripts for Python and C++ API
+    # measurements.
+    if "--server-pid" in sys.argv:
+        from api_benchmark import main as api_main
+
+        api_main()
+        return
+
     parser = argparse.ArgumentParser(description="llama.cpp benchmark")
     parser.add_argument(
         "--config",
