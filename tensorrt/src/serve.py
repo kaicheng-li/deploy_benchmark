@@ -36,6 +36,14 @@ def build_command(cfg: dict, host_override: str | None, port_override: int | Non
         "--port", str(port_override or serve_cfg.get("port", 8001)),
         "--tp_size", str(tp_override or serve_cfg.get("tp_size", 1)),
     ]
+    max_model_len = serve_cfg.get("max_model_len")
+    if max_model_len:
+        # TensorRT-LLM 1.2.1 exposes this limit as --max_seq_len.
+        cmd.extend(["--max_seq_len", str(max_model_len)])
+    for option in ("max_batch_size", "max_num_tokens", "free_gpu_memory_fraction"):
+        value = serve_cfg.get(option)
+        if value:
+            cmd.extend([f"--{option}", str(value)])
     return cmd
 
 
