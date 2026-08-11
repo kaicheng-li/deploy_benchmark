@@ -38,7 +38,7 @@ struct LlamaContext {
 
     ~LlamaContext() {
         if (ctx) llama_free(ctx);
-        if (model) llama_free_model(model);
+        if (model) llama_model_free(model);
     }
 
     bool load(const LlamaParams& params) {
@@ -47,9 +47,8 @@ struct LlamaContext {
         // 模型参数
         llama_model_params model_params = llama_model_default_params();
         model_params.n_gpu_layers = params.n_gpu_layers;
-        model_params.use_mmap = true;
 
-        model = llama_model_load(params.model_path.c_str(), model_params);
+        model = llama_model_load_from_file(params.model_path.c_str(), model_params);
         if (!model) {
             std::cerr << "Failed to load model: " << params.model_path << std::endl;
             return false;
@@ -60,7 +59,6 @@ struct LlamaContext {
         ctx_params.n_ctx = params.n_ctx;
         ctx_params.n_threads = params.n_threads;
         ctx_params.n_batch = params.batch_size;
-        ctx_params.seed = params.seed;
 
         ctx = llama_init_from_model(model, ctx_params);
         if (!ctx) {
@@ -88,7 +86,8 @@ std::vector<llama_token> tokenize(const llama_vocab* vocab, const std::string& t
 }
 
 // ── 生成 ──────────────────────────────────────────────────────
-std::string generate(LlamaContext& lctx, const std::string& prompt, int max_tokens) {
+std::string generate(LlamaContext& lctx, const std::string& prompt, int max_tokens,
+                     int* out_tokens = nullptr) {
     llama_context* ctx = lctx.ctx;
     const llama_vocab* vocab = lctx.vocab;
 
@@ -97,8 +96,13 @@ std::string generate(LlamaContext& lctx, const std::string& prompt, int max_toke
 
     // 准备 batch
     llama_batch batch = llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1);
+    batch.n_tokens = static_cast<int32_t>(tokens.size());
     for (size_t i = 0; i < tokens.size(); i++) {
-        llama_batch_add(batch, tokens[i], i, {0}, i == tokens.size() - 1);
+        batch.token[i] = tokens[i];
+        batch.pos[i] = static_cast<llama_pos>(i);
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = (i == tokens.size() - 1) ? 1 : 0;
     }
 
     // 编码 prompt
@@ -112,6 +116,7 @@ std::string generate(LlamaContext& lctx, const std::string& prompt, int max_toke
     // 生成
     std::string result;
     int n_cur = tokens.size();
+    int generated = 0;
 
     for (int i = 0; i < max_tokens; i++) {
         // 采样
@@ -129,6 +134,7 @@ std::string generate(LlamaContext& lctx, const std::string& prompt, int max_toke
         }
 
         if (llama_vocab_is_eog(vocab, next_id)) break;
+        generated++;
 
         // 解码 token
         char buf[256];
@@ -139,7 +145,12 @@ std::string generate(LlamaContext& lctx, const std::string& prompt, int max_toke
 
         // 下一轮
         llama_batch next_batch = llama_batch_init(1, 0, 1);
-        llama_batch_add(next_batch, next_id, n_cur, {0}, true);
+        next_batch.n_tokens = 1;
+        next_batch.token[0] = next_id;
+        next_batch.pos[0] = static_cast<llama_pos>(n_cur);
+        next_batch.n_seq_id[0] = 1;
+        next_batch.seq_id[0][0] = 0;
+        next_batch.logits[0] = 1;
         if (llama_decode(ctx, next_batch) != 0) {
             llama_batch_free(next_batch);
             break;
@@ -148,6 +159,7 @@ std::string generate(LlamaContext& lctx, const std::string& prompt, int max_toke
         n_cur++;
     }
 
+    if (out_tokens) *out_tokens = generated;
     return result;
 }
 

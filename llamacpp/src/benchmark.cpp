@@ -3,11 +3,19 @@
  */
 
 #include <iostream>
+#include <fstream>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "benchmark_utils.h"
 #include "inference.cpp"  // 引用上面的推理实现
+
+// M-RoPE 模型（如 Qwen3-VL）要求同一序列的位置只能向前推进；
+// 每轮独立 prompt 前清空 KV cache 元数据，位置即可重新从 0 开始。
+static void clear_kv_cache(llama_context* ctx) {
+    llama_memory_clear(llama_get_memory(ctx), false);
+}
 
 // ── 命令行参数解析 ────────────────────────────────────────────
 void print_usage(const char* prog) {
@@ -21,6 +29,8 @@ void print_usage(const char* prog) {
               << "  --max-tokens <n>    Max tokens to generate (default: 512)\n"
               << "  --warmup <n>        Warmup rounds (default: 5)\n"
               << "  --iterations <n>    Benchmark iterations (default: 20)\n"
+              << "  --output <dir>      Report output directory (default: ../results)\n"
+              << "  --report-prefix <s> Report file prefix (default: llamacpp_text_benchmark)\n"
               << std::endl;
 }
 
@@ -30,6 +40,8 @@ int main(int argc, char** argv) {
     std::string prompt_file;
     int warmup = 5;
     int iterations = 20;
+    std::string output_dir = "../results";
+    std::string report_prefix = "llamacpp_text_benchmark";
 
     // 解析参数
     for (int i = 1; i < argc; i++) {
@@ -52,6 +64,10 @@ int main(int argc, char** argv) {
             warmup = std::stoi(argv[++i]);
         } else if (arg == "--iterations" && i + 1 < argc) {
             iterations = std::stoi(argv[++i]);
+        } else if (arg == "--output" && i + 1 < argc) {
+            output_dir = argv[++i];
+        } else if (arg == "--report-prefix" && i + 1 < argc) {
+            report_prefix = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -86,12 +102,14 @@ int main(int argc, char** argv) {
 
     // 预热
     std::cout << "Warming up (" << warmup << " rounds)..." << std::endl;
-    LlamaContext warmup_ctx;
-    if (!warmup_ctx.load(params)) return 1;
-    for (int i = 0; i < warmup; i++) {
-        generate(warmup_ctx, prompts[i % prompts.size()], 32);
+    {
+        LlamaContext warmup_ctx;
+        if (!warmup_ctx.load(params)) return 1;
+        for (int i = 0; i < warmup; i++) {
+            clear_kv_cache(warmup_ctx.ctx);
+            generate(warmup_ctx, prompts[i % prompts.size()], 32);
+        }
     }
-    warmup_ctx.~LlamaContext();
 
     // 基准测试
     deploy_bench::BenchResult total_result;
@@ -103,13 +121,17 @@ int main(int argc, char** argv) {
 
     std::cout << "\nBenchmarking (" << iterations << " iterations)..." << std::endl;
     deploy_bench::Timer total_timer;
+    size_t total_output_tokens = 0;
 
     for (int i = 0; i < iterations; i++) {
         const std::string& p = prompts[i % prompts.size()];
 
+        clear_kv_cache(bench_ctx.ctx);
         deploy_bench::Timer iter_timer;
-        std::string output = generate(bench_ctx, p, params.max_tokens);
+        int gen_tokens = 0;
+        std::string output = generate(bench_ctx, p, params.max_tokens, &gen_tokens);
         double lat = iter_timer.elapsed_ms();
+        total_output_tokens += static_cast<size_t>(gen_tokens);
 
         total_result.per_iteration_latency.push_back(lat);
         std::cout << "  [" << (i + 1) << "/" << iterations << "] "
@@ -125,6 +147,24 @@ int main(int argc, char** argv) {
     std::cout << "\nTotal time: " << total_elapsed / 1000.0 << " s" << std::endl;
     std::cout << "Avg throughput: "
               << (iterations / (total_elapsed / 1000.0)) << " req/s" << std::endl;
+
+    // ── 保存报告 (MD / JSON / CSV) ──
+    total_result.throughput =
+        total_output_tokens / (total_elapsed / 1000.0);
+    deploy_bench::ReportMeta meta;
+    meta.framework = "llama.cpp";
+    meta.model_name = std::filesystem::path(params.model_path).stem().string();
+    meta.device = params.n_gpu_layers != 0 ? "cuda" : "cpu";
+    meta.task_type = "text-generation";
+    meta.total_output_tokens = total_output_tokens;
+    meta.elapsed_seconds = total_elapsed / 1000.0;
+
+    auto saved = deploy_bench::save_benchmark_report(
+        total_result, meta, output_dir, report_prefix);
+    std::cout << "\n报告已保存:\n";
+    for (const auto& path : saved) {
+        std::cout << "  " << path << std::endl;
+    }
 
     llama_backend_free();
     return 0;
